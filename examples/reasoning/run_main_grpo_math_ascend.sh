@@ -9,7 +9,7 @@ export HCCL_INTRA_ROCE_ENABLE=1
 
 CONFIG_PATH="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 REPO_PATH=$(dirname $(dirname "$CONFIG_PATH"))
-MEGATRON_PATH=/home/infiniai/zhouyongkang/projects/temp/Megatron-LM
+MEGATRON_PATH=/opt/Megatron-LM
 export PYTHONPATH=${REPO_PATH}:${MEGATRON_PATH}:$PYTHONPATH
 
 #支持NPU单卡多进程
@@ -26,5 +26,4 @@ else
     CONFIG_NAME=$1
 fi
 
-# ASCEND_LAUNCH_BLOCKING=1 \
 python ${REPO_PATH}/examples/reasoning/main_grpo.py --config-path ${CONFIG_PATH}/config/math/  --config-name $CONFIG_NAME

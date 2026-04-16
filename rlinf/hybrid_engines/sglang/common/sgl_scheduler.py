@@ -144,12 +144,13 @@ class Scheduler(_Scheduler):
     
     def _execute_with_device_injection(self, func, args, device_param_names=None, device_arg_positions=None, inject_as_object=True):
         import inspect
+        import torch
 
         accel_type = AcceleratorUtil.get_accelerator_type()
         device_type = AcceleratorUtil.get_device_type(accel_type)  # "cuda", "npu", "cpu"
         platform = AcceleratorUtil.get_torch_platform(accel_type)  # torch.cuda, torch.npu
 
-        device_id = _platform_call(platform, "current_device")
+        device_id = platform.current_device()
         if device_type == "cpu":
             target_device = torch.device("cpu")
         else:
@@ -161,23 +162,15 @@ class Scheduler(_Scheduler):
             try:
                 sig = inspect.signature(func)
                 param_names = list(sig.parameters.keys())
-                kwargs = {}
                 args_list = list(args)
-                for i, param_name in enumerate(param_names):
-                    if i < len(args_list):
-                        kwargs[param_name] = args_list[i]
-                    else:
-                        break
-                device_context = (
-                    platform.device(inject_value)
-                    if hasattr(platform, "device") and device_type != "cpu"
-                    else nullcontext()
-                )
-                with device_context:
-                    new_weight = func(**kwargs)
-                # if hasattr(new_weight, 'device') and new_weight.device != inject_value:
-                #     new_weight = new_weight.to(target_device)
-                return new_weight
+                
+                for param_name in device_param_names:
+                    if param_name in param_names:
+                        param_idx = param_names.index(param_name)
+                        while len(args_list) <= param_idx:
+                            args_list.append(None)
+                        args_list[param_idx] = inject_value
+                        return func(*args_list)
             except (ValueError, TypeError, AttributeError):
                 pass
 
@@ -186,45 +179,9 @@ class Scheduler(_Scheduler):
             for pos in device_arg_positions:
                 if 0 <= pos < len(args_list):
                     args_list[pos] = inject_value
-            return func(*args_list).to(target_device)
+            return func(*args_list)
 
         return func(*args)
-
-    @staticmethod
-    def _hf_to_sglang_name(model) -> Callable[[str], str]:
-        """Build a renamer from HuggingFace parameter names to sglang's.
-
-        transformers 5 nests a multimodal model's submodules under the wrapper --
-        ``model.visual.*`` and ``model.language_model.*`` -- where transformers 4
-        and sglang keep ``visual.*`` and ``model.*``. Feeding the new names to
-        sglang's ``load_weights`` fails deep inside it: its stacked-params mapping
-        rewrites ``gate_proj`` to ``gate_up_proj`` first, so the error surfaces as
-        ``KeyError: model.visual.blocks.0.mlp.gate_up_proj.weight`` for a
-        parameter that does exist, just one prefix over.
-
-        The rename is decided from the loaded sglang model, so a version whose
-        tree already matches the sender is left alone.
-
-        Args:
-            model: The sglang model to load weights into.
-
-        Returns:
-            A function mapping one HF parameter name to sglang's name for it.
-        """
-        param_names = dict(model.named_parameters()).keys()
-        renames = []
-        if any(name.startswith("visual.") for name in param_names):
-            renames.append(("model.visual.", "visual."))
-        if any(name.startswith("model.layers.") for name in param_names):
-            renames.append(("model.language_model.", "model."))
-
-        def rename(name: str) -> str:
-            for src, dst in renames:
-                if name.startswith(src):
-                    return dst + name[len(src) :]
-            return name
-
-        return rename
 
     def batch_load_hf_weight(self, state_dict: dict[str, Any]) -> Any:
         assert self.weight_reload == "sync", (
@@ -242,9 +199,9 @@ class Scheduler(_Scheduler):
                 new_weight = self._execute_with_device_injection(
                     func=func,
                     args=args,
-                    # device_param_names=['storage_device', 'map_location', 'device'],
+                    device_param_names=['storage_device', 'map_location', 'device'],
                     device_arg_positions=[6], 
-                    inject_as_object=False
+                    inject_as_object=True
                 )
                 batch_weight.append((name, new_weight))
         else:
