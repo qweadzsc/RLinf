@@ -31,37 +31,6 @@ from rlinf.scheduler import Tracer, Worker
 from rlinf.utils.timers import NamedTimer
 
 
-def _get_metric_compute_device(
-    reference_tensor: Optional[torch.Tensor] = None,
-) -> torch.device:
-    """Choose a safe device for distributed metric computation.
-
-    Prefer an already-accelerated tensor device first, then the worker's
-    configured accelerator, and finally CPU as a safe fallback. This avoids
-    hard failures when a worker ends up in a CPU-only runtime but metrics are
-    still computed before model loading/validation.
-    """
-    if reference_tensor is not None and reference_tensor.device.type != "cpu":
-        return reference_tensor.device
-
-    if Worker.torch_platform is not None:
-        try:
-            current_device = Worker.torch_platform.current_device()
-        except Exception:
-            current_device = None
-
-        if isinstance(current_device, torch.device):
-            return current_device
-        if isinstance(current_device, str):
-            return torch.device(current_device)
-        if isinstance(current_device, int) and Worker.torch_device_type is not None:
-            return torch.device(f"{Worker.torch_device_type}:{current_device}")
-
-    if reference_tensor is not None:
-        return reference_tensor.device
-    return torch.device("cpu")
-
-
 def compute_rollout_metrics_dynamic(
     rollout_batch: dict[str, torch.Tensor],
     max_prompt_len: int,
@@ -936,7 +905,7 @@ def masked_normalization(
     """
     dtype = torch.float64 if high_precision else torch.float32
     target_device = AcceleratorUtil.get_device_type(AcceleratorUtil.get_accelerator_type())
-    x = x.to(dtype=dtype).to(target_device)
+    x = x.to(dtype=dtype, device=target_device)
     if not inplace:
         x = x.clone()
     if dim is None:
@@ -946,7 +915,7 @@ def masked_normalization(
             np.prod([x.shape[d] for d in dim]), dtype=dtype, device=x.device
         )
     else:
-        mask = mask.to(dtype=dtype).to(target_device)
+        mask = mask.to(dtype=dtype, device=target_device)
         assert len(mask.shape) == len(x.shape), (mask.shape, x.shape, dim)
         for i in range(len(x.shape)):
             if i in dim:

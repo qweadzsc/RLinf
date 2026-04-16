@@ -141,42 +141,6 @@ class Scheduler(_Scheduler):
 
         return result
 
-    @staticmethod
-    def _hf_to_sglang_name(model) -> Callable[[str], str]:
-        """Build a renamer from HuggingFace parameter names to sglang's.
-
-        transformers 5 nests a multimodal model's submodules under the wrapper --
-        ``model.visual.*`` and ``model.language_model.*`` -- where transformers 4
-        and sglang keep ``visual.*`` and ``model.*``. Feeding the new names to
-        sglang's ``load_weights`` fails deep inside it: its stacked-params mapping
-        rewrites ``gate_proj`` to ``gate_up_proj`` first, so the error surfaces as
-        ``KeyError: model.visual.blocks.0.mlp.gate_up_proj.weight`` for a
-        parameter that does exist, just one prefix over.
-
-        The rename is decided from the loaded sglang model, so a version whose
-        tree already matches the sender is left alone.
-
-        Args:
-            model: The sglang model to load weights into.
-
-        Returns:
-            A function mapping one HF parameter name to sglang's name for it.
-        """
-        param_names = dict(model.named_parameters()).keys()
-        renames = []
-        if any(name.startswith("visual.") for name in param_names):
-            renames.append(("model.visual.", "visual."))
-        if any(name.startswith("model.layers.") for name in param_names):
-            renames.append(("model.language_model.", "model."))
-
-        def rename(name: str) -> str:
-            for src, dst in renames:
-                if name.startswith(src):
-                    return dst + name[len(src) :]
-            return name
-
-        return rename
-
     def batch_load_hf_weight(self, state_dict: dict[str, Any]) -> Any:
         assert self.weight_reload == "sync", (
             "only sglang with 'sync' can run 'batch_load_hf_weight'"
