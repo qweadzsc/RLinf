@@ -24,4 +24,3 @@ PKG-INFO
 .claude/settings.json
 logs/
 kernel_meta/
-fusion_result.json
