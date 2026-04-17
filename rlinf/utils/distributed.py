@@ -904,7 +904,8 @@ def masked_normalization(
             Normalized x, with the same shape as x.
     """
     dtype = torch.float64 if high_precision else torch.float32
-    x = x.to(dtype=dtype).cuda()
+    target_device = AcceleratorUtil.get_device_type(AcceleratorUtil.get_accelerator_type())
+    x = x.to(dtype=dtype).to(target_device)
     if not inplace:
         x = x.clone()
     if dim is None:
@@ -914,7 +915,7 @@ def masked_normalization(
             np.prod([x.shape[d] for d in dim]), dtype=dtype, device=x.device
         )
     else:
-        mask = mask.to(dtype=dtype).cuda()
+        mask = mask.to(dtype=dtype).to(target_device)
         assert len(mask.shape) == len(x.shape), (mask.shape, x.shape, dim)
         for i in range(len(x.shape)):
             if i in dim:
