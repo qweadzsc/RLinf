@@ -53,7 +53,7 @@ logger.setLevel(logging.WARNING)
 
 
 def _platform_call(platform, method_name: str, device=None, default=None):
-    """Call a torch platform method with optional device argument safely."""
+    """Call a torch platform method with an optional device argument."""
     if not hasattr(platform, method_name):
         return default
     method = getattr(platform, method_name)
@@ -99,10 +99,7 @@ class Scheduler(_Scheduler):
 
     def cuda_info(self, text: str = ""):
         platform = Worker.torch_platform
-        current_device = (
-            _platform_call(platform, "current_device")
-        )
-
+        current_device = _platform_call(platform, "current_device")
         free_gpu_memory, total_gpu_memory = (0.0, 0.0)
         mem_info = _platform_call(platform, "mem_get_info", current_device)
         if mem_info is not None:
@@ -110,16 +107,12 @@ class Scheduler(_Scheduler):
             free_gpu_memory /= 2**30
             total_gpu_memory /= 2**30
 
-        memory_allocated = (
-            _platform_call(platform, "memory_allocated", current_device, 0.0) / 2**30
-            if hasattr(platform, "memory_allocated")
-            else 0.0
-        )
-        memory_reserved = (
-            _platform_call(platform, "memory_reserved", current_device, 0.0) / 2**30
-            if hasattr(platform, "memory_reserved")
-            else 0.0
-        )
+        memory_allocated = _platform_call(
+            platform, "memory_allocated", current_device, 0.0
+        ) / 2**30
+        memory_reserved = _platform_call(
+            platform, "memory_reserved", current_device, 0.0
+        ) / 2**30
 
         self._rlinf_worker.log_info(
             f"[dp {self._rlinf_worker.get_parent_rank()}-tp {self.tp_rank}] {text} "
@@ -149,7 +142,7 @@ class Scheduler(_Scheduler):
         device_type = AcceleratorUtil.get_device_type(accel_type)  # "cuda", "npu", "cpu"
         platform = AcceleratorUtil.get_torch_platform(accel_type)  # torch.cuda, torch.npu
 
-        device_id = platform.current_device()
+        device_id = _platform_call(platform, "current_device")
         if device_type == "cpu":
             target_device = torch.device("cpu")
         else:
@@ -168,7 +161,12 @@ class Scheduler(_Scheduler):
                         kwargs[param_name] = args_list[i]
                     else:
                         break
-                with torch.npu.device(inject_value):
+                device_context = (
+                    platform.device(inject_value)
+                    if hasattr(platform, "device") and device_type != "cpu"
+                    else nullcontext()
+                )
+                with device_context:
                     new_weight = func(**kwargs)
                 # if hasattr(new_weight, 'device') and new_weight.device != inject_value:
                 #     new_weight = new_weight.to(target_device)
