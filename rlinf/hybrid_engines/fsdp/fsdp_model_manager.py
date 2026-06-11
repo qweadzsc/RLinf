@@ -38,7 +38,8 @@ from rlinf.hybrid_engines.fsdp.utils import (
 )
 from rlinf.scheduler import Worker
 from rlinf.utils.logging import get_logger
-from rlinf.utils.utils import warmup_optimizer_state
+from rlinf.utils.utils import warmup_optimizer_state, init_adamw_optimizer_state
+from rlinf.mp_wrapper.mixed_precision_wrapper import MixedPrecisionWrapper
 
 warnings.filterwarnings(
     "ignore",
@@ -265,6 +266,20 @@ class FSDPModelManager:
         self.model = self._strategy.wrap_model(
             model=module, device_mesh=self._device_mesh
         )
+        
+        # Apply MixedPrecisionWrapper AFTER FSDP wrapping so hooks fire on
+        # FSDP-managed params (FlatParameter for FSDP1, DTensor for FSDP2).
+        if True:
+            model = MixedPrecisionWrapper(
+                model,
+                compute_dtype=torch.bfloat16,
+                keep_master_weights_on_cpu=True,
+                stream_grads_to_cpu=True,
+            )
+            if is_main:
+                logging.info(
+                    f"MixedPrecisionWrapper: master_cpu={master_cpu}, stream_grads={stream_grads}"
+                )
 
         self._strategy.load_hf_checkpoint_to_fsdp2_model(
             model=self.model,
@@ -272,6 +287,8 @@ class FSDPModelManager:
             device_mesh=self._device_mesh,
             dtype=self.torch_dtype,
         )
+        
+        self._strategy.debug_fsdp2_param_memory(self.model, self.torch_dtype)
         
         self.optimizer = self.build_optimizer(
             model=self.model, enable_critic_warmup=self.critic_warmup_steps > 0
@@ -507,11 +524,28 @@ class FSDPModelManager:
                     "betas": betas,
                 }
             )
-        optimizer = torch.optim.AdamW(
-            param_groups,
-            eps=adam_eps,
-            weight_decay=weight_decay,
-        )
+        # optimizer = torch.optim.AdamW(
+        #     param_groups,
+        #     eps=adam_eps,
+        #     weight_decay=weight_decay,
+        # )
+        if isinstance(model, MixedPrecisionWrapper):
+            from rlinf.mp_wrapper.hybrid_adam import CPUAdam
+            optimizer = WrappedOptimizer(
+                CPUAdam, model,
+                # param_groups,
+                eps=adam_eps,
+                weight_decay=weight_decay,
+                adamw_mode=True,
+            )
+            if is_main:
+                logging.info(f"Wrapper optimizer: {wrapper_optim}")
+        else:
+            optimizer = torch.optim.AdamW(
+                param_groups,
+                eps=adam_eps,
+                weight_decay=weight_decay,
+            )
 
         # run optimizer empty step to initialize optimizer.state
         # to avoid KeyError during get_state_dict/set_state_dict
