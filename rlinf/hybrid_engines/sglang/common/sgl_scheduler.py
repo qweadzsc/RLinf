@@ -168,13 +168,10 @@ class Scheduler(_Scheduler):
                         kwargs[param_name] = args_list[i]
                     else:
                         break
-                for param_name in device_param_names:
-                    if param_name in kwargs:
-                        kwargs[param_name] = inject_value
                 with torch.npu.device(inject_value):
                     new_weight = func(**kwargs)
-                if hasattr(new_weight, 'device') and new_weight.device != inject_value:
-                    new_weight = new_weight.to(target_device)
+                # if hasattr(new_weight, 'device') and new_weight.device != inject_value:
+                #     new_weight = new_weight.to(target_device)
                 return new_weight
             except (ValueError, TypeError, AttributeError):
                 pass
@@ -184,7 +181,7 @@ class Scheduler(_Scheduler):
             for pos in device_arg_positions:
                 if 0 <= pos < len(args_list):
                     args_list[pos] = inject_value
-            return func(*args_list)
+            return func(*args_list).to(target_device)
 
         return func(*args)
 
@@ -204,7 +201,7 @@ class Scheduler(_Scheduler):
                 new_weight = self._execute_with_device_injection(
                     func=func,
                     args=args,
-                    device_param_names=['storage_device', 'map_location', 'device'],
+                    # device_param_names=['storage_device', 'map_location', 'device'],
                     device_arg_positions=[6], 
                     inject_as_object=False
                 )
