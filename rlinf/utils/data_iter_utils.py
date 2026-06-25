@@ -57,24 +57,6 @@ def _get_runtime_device(batch: Union[dict, list[torch.Tensor]]) -> torch.device:
     return torch.device("cpu")
 
 
-def _get_runtime_device(batch: Union[dict, list[torch.Tensor]]) -> torch.device:
-    """Infer a suitable device for small sync tensors from the input batch."""
-    if isinstance(batch, (dict, UserDict)):
-        for value in batch.values():
-            if isinstance(value, torch.Tensor):
-                return value.device
-    else:
-        for item in batch:
-            if isinstance(item, torch.Tensor):
-                return item.device
-
-    if hasattr(torch, "npu") and torch.npu.is_available():
-        return torch.device("npu")
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
-
-
 def concat_dict_list(list_of_dicts: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Concatenates torch.Tensor or np.ndarray objects corresponding to the same keys in a list of dictionaries.
