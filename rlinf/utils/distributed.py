@@ -32,6 +32,37 @@ from rlinf.utils.timers import NamedTimer
 from rlinf.scheduler.hardware.accelerators import AcceleratorUtil
 
 
+def _get_metric_compute_device(
+    reference_tensor: Optional[torch.Tensor] = None,
+) -> torch.device:
+    """Choose a safe device for distributed metric computation.
+
+    Prefer an already-accelerated tensor device first, then the worker's
+    configured accelerator, and finally CPU as a safe fallback. This avoids
+    hard failures when a worker ends up in a CPU-only runtime but metrics are
+    still computed before model loading/validation.
+    """
+    if reference_tensor is not None and reference_tensor.device.type != "cpu":
+        return reference_tensor.device
+
+    if Worker.torch_platform is not None:
+        try:
+            current_device = Worker.torch_platform.current_device()
+        except Exception:
+            current_device = None
+
+        if isinstance(current_device, torch.device):
+            return current_device
+        if isinstance(current_device, str):
+            return torch.device(current_device)
+        if isinstance(current_device, int) and Worker.torch_device_type is not None:
+            return torch.device(f"{Worker.torch_device_type}:{current_device}")
+
+    if reference_tensor is not None:
+        return reference_tensor.device
+    return torch.device("cpu")
+
+
 def compute_rollout_metrics_dynamic(
     rollout_batch: dict[str, torch.Tensor],
     max_prompt_len: int,
