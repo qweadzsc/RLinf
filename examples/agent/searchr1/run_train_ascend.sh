@@ -11,6 +11,7 @@ CONFIG_PATH="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 REPO_PATH=$(dirname $(dirname $(dirname "$CONFIG_PATH")))
 MEGATRON_PATH=/opt/Megatron-LM
 export PYTHONPATH=${REPO_PATH}:${MEGATRON_PATH}:${REPO_PATH}/examples:$PYTHONPATH
+export PYTHONPATH=${REPO_PATH}:${MEGATRON_PATH}:${REPO_PATH}/examples:$PYTHONPATH
 
 #支持NPU单卡多进程
 export HCCL_HOST_SOCKET_PORT_RANGE=60000-60050
