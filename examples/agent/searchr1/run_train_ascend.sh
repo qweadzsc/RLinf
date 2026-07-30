@@ -9,7 +9,7 @@ export HCCL_INTRA_ROCE_ENABLE=1
 
 CONFIG_PATH="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 REPO_PATH=$(dirname $(dirname $(dirname "$CONFIG_PATH")))
-MEGATRON_PATH=/opt/Megatron-LM
+MEGATRON_PATH=/home/infiniai/zhouyongkang/projects/temp/Megatron-LM
 export PYTHONPATH=${REPO_PATH}:${MEGATRON_PATH}:${REPO_PATH}/examples:$PYTHONPATH
 
 #支持NPU单卡多进程
@@ -21,7 +21,7 @@ export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 #,8,9,10,11,12,13,14,15
 
 if [ -z "$1" ]; then
-    CONFIG_NAME="train_qwen2.5"
+    CONFIG_NAME="train_qwen2.5_ascend"
 else
     CONFIG_NAME=$1
 fi
