@@ -13,28 +13,14 @@
 # limitations under the License.
 
 """
-Hardware-adaptive Qdrant retriever server.
+Ascend NPU Qdrant retriever server.
 
-The original version hard-coded CUDA devices. This version can run on:
-  - NVIDIA GPU: cuda:0, cuda:1, ...
-  - Ascend NPU:  npu:0, npu:1, ...
-  - CPU fallback, mainly for local debugging
+This server is dedicated to Ascend NPU execution. It uses every visible NPU by
+default, or the NPU indices provided through --devices.
 
-Examples:
-  # Auto-detect Ascend first, then CUDA, then CPU.
+Example:
   python retriever_server_accel.py \
-      --retriever_model /path/to/model \
-      --qdrant_collection_name my_collection
-
-  # Force Ascend NPU 0,1,2,3.
-  python retriever_server_accel.py \
-      --device-backend npu --devices 0,1,2,3 \
-      --retriever_model /path/to/model \
-      --qdrant_collection_name my_collection
-
-  # Force NVIDIA GPU 0,1.
-  python retriever_server_accel.py \
-      --device-backend cuda --devices 0,1 \
+      --devices 0,1,2,3 \
       --retriever_model /path/to/model \
       --qdrant_collection_name my_collection
 """
@@ -50,12 +36,12 @@ import os
 import socket
 import time
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
 from functools import partial
 from typing import Optional
 
 import numpy as np
 import torch
+import torch_npu
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -72,181 +58,20 @@ _GLOBAL_ENCODER: Optional[Encoder] = None
 _GLOBAL_ENCODER_DEVICE: Optional[str] = None
 
 
-@dataclass(frozen=True)
-class DeviceSpec:
-    """A normalized device descriptor that is safe to pass to child processes."""
-
-    backend: str  # "cuda", "npu", or "cpu"
-    index: Optional[int] = None
-
-    @property
-    def device_str(self) -> str:
-        if self.backend == "cpu":
-            return "cpu"
-        if self.index is None:
-            return self.backend
-        return f"{self.backend}:{self.index}"
-
-    def torch_device(self) -> torch.device:
-        return torch.device(self.device_str)
-
-
-def _import_torch_npu() -> bool:
-    """Import torch_npu if available. Return whether NPU support is importable."""
-    try:
-        import torch_npu  # noqa: F401
-
-        return True
-    except Exception:
-        return False
-
-
-def _get_npu_module():
-    """Return the NPU module exposed by torch_npu, or None if unavailable."""
-    try:
-        import torch_npu  # type: ignore
-    except Exception:
-        return None
-
-    # Most recent torch_npu versions expose torch.npu after import torch_npu.
-    # Some older code paths also expose torch_npu.npu, so keep both.
-    return getattr(torch, "npu", None) or getattr(torch_npu, "npu", None)
-
-
-def _device_count(backend: str) -> int:
-    if backend == "cuda":
-        return torch.cuda.device_count() if torch.cuda.is_available() else 0
-    if backend == "npu":
-        npu_mod = _get_npu_module()
-        if npu_mod is None:
-            return 0
-        try:
-            return int(npu_mod.device_count())
-        except Exception:
-            return 0
-    if backend == "cpu":
-        return 1
-    raise ValueError(f"Unsupported backend: {backend}")
-
-
-def _backend_available(backend: str) -> bool:
-    return _device_count(backend) > 0
-
-
-def _detect_backend(preferred: str) -> str:
-    """
-    Detect the accelerator backend.
-
-    In auto mode we prefer Ascend NPU when torch_npu is available, then CUDA,
-    then CPU. Use --device-backend cuda/npu to force a specific backend.
-    """
-    preferred = preferred.lower()
-    if preferred != "auto":
-        if preferred not in {"cuda", "npu", "cpu"}:
-            raise ValueError(f"Unsupported device backend: {preferred}")
-        if not _backend_available(preferred):
-            raise RuntimeError(
-                f"Requested backend '{preferred}' is not available. "
-                f"npu_count={_device_count('npu')}, "
-                f"cuda_count={_device_count('cuda')}, cpu_count=1"
-            )
-        return preferred
-
-    if _backend_available("npu"):
-        return "npu"
-    if _backend_available("cuda"):
-        return "cuda"
-    return "cpu"
-
-
-def _normalize_device_token(token: str, backend: str) -> DeviceSpec:
-    token = token.strip().lower()
-    if not token:
-        raise ValueError("Empty device token")
-    if token == "cpu":
-        return DeviceSpec("cpu", None)
-
-    if ":" in token:
-        dev = torch.device(token)
-        if dev.type not in {"cuda", "npu", "cpu"}:
-            raise ValueError(f"Unsupported device type in token: {token}")
-        return DeviceSpec(dev.type, dev.index)
-
-    # A bare integer such as "0" means "<selected_backend>:0".
-    if not token.isdigit():
-        raise ValueError(
-            f"Invalid device token '{token}'. Use '0,1' or explicit 'cuda:0,npu:0'."
-        )
-    if backend == "cpu":
-        return DeviceSpec("cpu", None)
-    return DeviceSpec(backend, int(token))
-
-
-def resolve_devices(
-    preferred_backend: str = "auto",
+def resolve_npu_devices(
     devices_arg: Optional[str] = None,
     num_encoder_workers: Optional[int] = None,
-) -> list[DeviceSpec]:
-    """Resolve the actual devices used by encoder worker processes."""
-    backend = _detect_backend(preferred_backend)
-
+) -> list[int]:
+    """Return the NPU indices assigned to encoder worker processes."""
     if devices_arg:
-        devices = [_normalize_device_token(x, backend) for x in devices_arg.split(",")]
+        devices = [int(index.strip()) for index in devices_arg.split(",")]
     else:
-        count = _device_count(backend)
-        if backend == "cpu":
-            devices = [DeviceSpec("cpu", None)]
-        else:
-            devices = [DeviceSpec(backend, i) for i in range(count)]
+        devices = list(range(torch.npu.device_count()))
 
-    if not devices:
-        raise RuntimeError("No valid devices are resolved for encoder workers.")
-
-    # Validate device indices against visible devices. torch device_count respects
-    # CUDA_VISIBLE_DEVICES / ASCEND_RT_VISIBLE_DEVICES-like environment filtering.
-    for dev in devices:
-        if dev.backend == "cpu":
-            continue
-        count = _device_count(dev.backend)
-        if dev.index is None or dev.index < 0 or dev.index >= count:
-            raise RuntimeError(
-                f"Device {dev.device_str} is not visible. "
-                f"Detected {count} visible {dev.backend} device(s)."
-            )
-
-    # By default: one encoder process per visible device. If the caller wants more
-    # workers than devices, assign devices round-robin. This is useful for CPU, but
-    # on NPU/GPU one worker per card is usually the safer default.
     if num_encoder_workers is not None:
-        if num_encoder_workers <= 0:
-            raise ValueError("--num-encoder-workers must be positive")
-        devices = [devices[i % len(devices)] for i in range(num_encoder_workers)]
+        devices = [devices[index % len(devices)] for index in range(num_encoder_workers)]
 
     return devices
-
-
-def set_torch_device(device_spec: DeviceSpec) -> None:
-    """Set the default device once inside each worker process."""
-    if device_spec.backend == "cpu":
-        return
-
-    device = device_spec.torch_device()
-    if device_spec.backend == "cuda":
-        torch.cuda.set_device(device)
-        return
-
-    if device_spec.backend == "npu":
-        npu_mod = _get_npu_module()
-        if npu_mod is None:
-            raise RuntimeError(
-                "torch_npu is not importable, but an NPU device was requested."
-            )
-        # For Ascend it is safer to set the process device before constructing
-        # the model/encoder and avoid switching devices later in the same process.
-        npu_mod.set_device(device)
-        return
-
-    raise ValueError(f"Unsupported backend: {device_spec.backend}")
 
 
 def _encoder_worker_init(init_queue) -> None:
@@ -254,10 +79,10 @@ def _encoder_worker_init(init_queue) -> None:
     global _GLOBAL_ENCODER, _GLOBAL_ENCODER_DEVICE
 
     cfg = init_queue.get()
-    device_spec = DeviceSpec(cfg["backend"], cfg["index"])
-    set_torch_device(device_spec)
+    device_index = cfg["index"]
+    torch.npu.set_device(device_index)
 
-    torch_device = device_spec.torch_device()
+    torch_device = torch.device(f"npu:{device_index}")
     LOGGER.info("Initializing Encoder on %s", torch_device)
     _GLOBAL_ENCODER = Encoder(
         cfg["model_name"],
@@ -267,7 +92,7 @@ def _encoder_worker_init(init_queue) -> None:
         cfg["use_fp16"],
         torch_device,
     )
-    _GLOBAL_ENCODER_DEVICE = device_spec.device_str
+    _GLOBAL_ENCODER_DEVICE = f"npu:{device_index}"
 
 
 def _encoder_worker_encode(query_list: list[str], is_query: bool = True) -> np.ndarray:
@@ -284,7 +109,7 @@ class AsyncEncoderPool:
         pooling_method: str,
         max_length: int,
         use_fp16: bool,
-        devices: list[DeviceSpec],
+        devices: list[int],
     ):
         if not devices:
             raise ValueError("AsyncEncoderPool requires at least one device.")
@@ -299,8 +124,7 @@ class AsyncEncoderPool:
                     "pooling_method": pooling_method,
                     "max_length": max_length,
                     "use_fp16": use_fp16,
-                    "backend": device.backend,
-                    "index": device.index,
+                    "index": device,
                 }
             )
 
@@ -314,7 +138,7 @@ class AsyncEncoderPool:
         LOGGER.info(
             "Encoder pool created with %d worker(s): %s",
             len(devices),
-            ", ".join(d.device_str for d in devices),
+            ", ".join(f"npu:{device}" for device in devices),
         )
 
     async def encode(self, query_list: list[str] | str, is_query: bool = True) -> np.ndarray:
@@ -433,12 +257,11 @@ class AsyncDenseRetriever(AsyncBaseRetriever):
         else:
             LOGGER.info("collection status is green now")
 
-        devices = resolve_devices(
-            preferred_backend=config.device_backend,
+        devices = resolve_npu_devices(
             devices_arg=config.devices,
             num_encoder_workers=config.num_encoder_workers,
         )
-        LOGGER.info("Using encoder devices: %s", ", ".join(d.device_str for d in devices))
+        LOGGER.info("Using encoder devices: %s", ", ".join(f"npu:{device}" for device in devices))
         self.encoder = AsyncEncoderPool(
             model_name=self.retrieval_method,
             model_path=config.retrieval_model_path,
@@ -564,7 +387,6 @@ class Config:
         retrieval_pooling_method: str = "mean",
         retrieval_query_max_length: int = 256,
         retrieval_use_fp16: bool = False,
-        device_backend: str = "auto",
         devices: Optional[str] = None,
         num_encoder_workers: Optional[int] = None,
     ):
@@ -582,7 +404,6 @@ class Config:
         self.retrieval_pooling_method = retrieval_pooling_method
         self.retrieval_query_max_length = retrieval_query_max_length
         self.retrieval_use_fp16 = retrieval_use_fp16
-        self.device_backend = device_backend
         self.devices = devices
         self.num_encoder_workers = num_encoder_workers
 
@@ -709,18 +530,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Directory to save server address file. Optional.",
     )
     parser.add_argument(
-        "--device-backend",
-        choices=["auto", "cuda", "npu", "cpu"],
-        default="auto",
-        help="Encoder device backend. auto prefers npu, then cuda, then cpu.",
-    )
-    parser.add_argument(
         "--devices",
         type=str,
         default=None,
         help=(
-            "Comma-separated devices. Examples: '0,1,2,3', 'cuda:0,cuda:1', "
-            "'npu:0,npu:1'. If omitted, all visible devices of the selected backend are used."
+            "Comma-separated NPU indices, for example '0,1,2,3'. If omitted, all visible NPUs are used."
         ),
     )
     parser.add_argument(
@@ -791,14 +605,6 @@ async def main_async(args: argparse.Namespace) -> None:
         format="%(asctime)s %(levelname)s [%(processName)s] %(name)s: %(message)s",
     )
 
-    # Trigger backend detection early so misconfigured jobs fail before Qdrant init.
-    devices = resolve_devices(
-        preferred_backend=args.device_backend,
-        devices_arg=args.devices,
-        num_encoder_workers=args.num_encoder_workers,
-    )
-    LOGGER.info("Resolved encoder devices: %s", ", ".join(d.device_str for d in devices))
-
     host_name = socket.gethostname()
     host_ip = socket.gethostbyname(host_name)
     LOGGER.info("Server address: %s:%s", host_ip, args.port)
@@ -817,7 +623,6 @@ async def main_async(args: argparse.Namespace) -> None:
         retrieval_pooling_method=args.retrieval_pooling_method,
         retrieval_query_max_length=args.retrieval_query_max_length,
         retrieval_use_fp16=not args.no_fp16,
-        device_backend=args.device_backend,
         devices=args.devices,
         num_encoder_workers=args.num_encoder_workers,
     )
