@@ -680,7 +680,7 @@ def init_adamw_optimizer_state(optimizer):
             local_zero = torch.zeros_like(
                 local.detach(),
                 memory_format=torch.preserve_format,
-                device=local.device,  # 关键：跟 param local 一致
+                device=local.device,  # Important: match the parameter's local device.
             )
 
             return DTensor.from_local(

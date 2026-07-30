@@ -24,5 +24,4 @@ python3 -u ${CONFIG_PATH}/retriever_server_accel.py \
     --qdrant_collection_name $qdrant_collection_name \
     --qdrant_url $qdrant_url\
     --qdrant_search_param $qdrant_search_param\
-    --device-backend npu \
     --port 8000

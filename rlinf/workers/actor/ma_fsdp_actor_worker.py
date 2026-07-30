@@ -226,11 +226,11 @@ def _get_submodule_by_path(model, path):
 
 def _find_transformer_layers(model):
     """
-    尽量兼容：
+    Support as many layouts as possible:
       - AutoModel: model.layers
       - AutoModelForCausalLM: model.model.layers
-      - Qwen/LLaMA 类结构
-      - 某些 wrapper: module.model.layers / base_model.model.layers
+      - Qwen/LLaMA-style layouts
+      - Some wrappers: module.model.layers / base_model.model.layers
     """
     candidate_paths = [
         "layers",
@@ -253,7 +253,7 @@ def _find_transformer_layers(model):
         if obj is not None and isinstance(obj, torch.nn.ModuleList):
             return path, obj
 
-    # fallback：找名字像 decoder layer 的模块
+    # Fallback: find modules whose names resemble decoder layers.
     rows = []
     for name, mod in model.named_modules():
         cls = mod.__class__.__name__.lower()
@@ -281,15 +281,15 @@ def install_backward_memory_hooks(
     max_param_hooks_per_layer=2,
 ):
     """
-    返回 handles，训练结束后需要 remove。
+    Return hook handles; remove them after training.
 
     hook_every:
-      每隔多少层打一次 hook。想精确定位就设 1。
-      层很多、日志太多时可以设 4/8。
+      Run a hook every N layers. Set to 1 for precise localization.
+      Use 4 or 8 when there are many layers and logs become too verbose.
 
     include_param_grad_hooks:
-      是否额外给每层前几个参数挂 Tensor grad hook。
-      这个日志会更多，但可以看到 grad 具体在哪个参数附近 ready。
+      Whether to add Tensor gradient hooks to the first few parameters of each layer.
+      This adds more logs but shows which parameter is near gradient readiness.
     """
     rank = int(os.environ.get("RANK", "0"))
     handles = []
