@@ -16,7 +16,7 @@ qdrant_collection_name=wiki_collection
 qdrant_search_param='{}'
 
 CONFIG_PATH="$( realpath "$( dirname "${BASH_SOURCE[0]}" )"  )"
-python3 -u ${CONFIG_PATH}/local_retrieval_server.py \
+python3 -u ${CONFIG_PATH}/retriever_server_accel.py \
     --pages_path $pages_file \
     --topk 3 \
     --retriever_name $retriever_name \
@@ -24,4 +24,5 @@ python3 -u ${CONFIG_PATH}/local_retrieval_server.py \
     --qdrant_collection_name $qdrant_collection_name \
     --qdrant_url $qdrant_url\
     --qdrant_search_param $qdrant_search_param\
+    --device-backend npu \
     --port 8000
