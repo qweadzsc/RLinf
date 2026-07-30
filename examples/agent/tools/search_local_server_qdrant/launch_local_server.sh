@@ -24,4 +24,4 @@ python3 -u ${CONFIG_PATH}/local_retrieval_server.py \
     --qdrant_collection_name $qdrant_collection_name \
     --qdrant_url $qdrant_url\
     --qdrant_search_param $qdrant_search_param\
-    --port 8000
+    --port 8001
