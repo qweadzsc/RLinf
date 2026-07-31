@@ -52,8 +52,8 @@ def get_local_npu_device():
 
 def make_meta_init_fn(target_device: torch.device, root_model: nn.Module = None):
     """
-    FSDP1 会在 flatten/shard 前对 meta module 调用 param_init_fn。
-    这里必须把当前 module 的直接参数/ buffer materialize 到本 rank 的 NPU。
+    FSDP1 calls param_init_fn on meta modules before flattening and sharding.
+    This must materialize the current module's direct parameters and buffers on this rank's NPU.
     """
     def init_fn(module: nn.Module):
         has_meta_param = any(
@@ -66,14 +66,14 @@ def make_meta_init_fn(target_device: torch.device, root_model: nn.Module = None)
         if not has_meta_param and not has_meta_buffer:
             return
 
-        # 只 materialize 当前 module 的直接 tensor，避免递归 materialize 整个模型
+        # Materialize only this module's direct tensors to avoid recursively materializing the entire model.
         module.to_empty(device=target_device, recurse=False)
 
-        # 如果你后面会完整加载 HF checkpoint，参数值会被覆盖，
-        # 所以这里通常不需要 reset_parameters。
+        # A subsequent full Hugging Face checkpoint load overwrites parameter values,
+        # so reset_parameters is usually unnecessary here.
         #
-        # 但如果后续发现 missing_keys 里有运行时会用到的 buffer，
-        # 可以打开下面这段，用 HF 自带初始化补齐非 checkpoint buffer。
+        # If missing_keys later reveals a runtime buffer, enable the block below
+        # to initialize non-checkpoint buffers with Hugging Face defaults.
         #
         # if root_model is not None and hasattr(root_model, "_init_weights"):
         #     root_model._init_weights(module)
@@ -233,11 +233,11 @@ class FSDPStrategy(FSDPStrategyBase):
         #     module=model,
         #     param_init_fn=init_fn,
         #     auto_wrap_policy=auto_wrap_policy,
-        #     # 关键：NPU 上不要传 int，显式传 torch.device
+        #     # Important: explicitly pass torch.device rather than an int on NPU.
         #     device_id=target_device,
         #     sharding_strategy=sharding_strategy,
         #     mixed_precision=mixed_precision,
-        #     # 关键：如果你是 wrap 后再 load checkpoint，先设 False
+        #     # Important: set this to False when loading the checkpoint after wrapping.
         #     sync_module_states=False,
         #     device_mesh=device_mesh,
         #     forward_prefetch=self.cfg.fsdp_config.forward_prefetch,

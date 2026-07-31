@@ -27,6 +27,7 @@ from torch.distributed.tensor import DTensor
 from torch.multiprocessing.reductions import reduce_tensor
 
 import rlinf.algorithms  # noqa: F401
+from rlinf.algorithms.expert import build_expert_model_config
 from rlinf.algorithms.registry import calculate_adv_and_returns, policy_loss
 from rlinf.algorithms.utils import (
     kl_penalty,
@@ -62,10 +63,13 @@ from rlinf.utils.distributed import (
     compute_rollout_metrics as compute_math_rollout_metrics,
 )
 from rlinf.utils.metric_utils import (
+    CRITIC_EXPLAINED_VARIANCE_KEY,
     append_to_dict,
+    compute_critic_explained_variance_from_stats,
     compute_loss_mask,
     compute_rollout_metrics,
     compute_split_num,
+    pop_critic_explained_variance_stats,
 )
 from rlinf.utils.nested_dict_process import (
     put_tensor_device,
@@ -121,6 +125,46 @@ def process_nested_dict_for_train(nested_dict, shuffle_id):
         elif isinstance(value, dict):
             ret_dict[key] = process_nested_dict_for_train(value, shuffle_id)
     return ret_dict
+
+
+def trim_nested_tensor_time_dim(value, target_steps: int, key_path=()):
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        assert value.shape[0] in {target_steps, target_steps + 1}, (
+            f"Cannot trim field {'.'.join(key_path)!r} with shape "
+            f"{tuple(value.shape)} to {target_steps} OPD training steps."
+        )
+        return value[:target_steps]
+    if isinstance(value, dict):
+        return {
+            key: trim_nested_tensor_time_dim(
+                nested_value, target_steps, (*key_path, key)
+            )
+            for key, nested_value in value.items()
+        }
+    raise TypeError(
+        f"Unsupported field {'.'.join(key_path)!r} type {type(value)} for OPD trimming."
+    )
+
+
+def flatten_nested_tensor_time_batch(value, key_path=()):
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        assert value.dim() >= 2, (
+            f"Cannot flatten field {'.'.join(key_path)!r} with shape "
+            f"{tuple(value.shape)} across time and batch."
+        )
+        return value.reshape(-1, *value.shape[2:])
+    if isinstance(value, dict):
+        return {
+            key: flatten_nested_tensor_time_batch(nested_value, (*key_path, key))
+            for key, nested_value in value.items()
+        }
+    raise TypeError(
+        f"Unsupported field {'.'.join(key_path)!r} type {type(value)} for flattening."
+    )
 
 
 def compute_rollout_train_kl(
@@ -236,11 +280,11 @@ def _get_submodule_by_path(model, path):
 
 def _find_transformer_layers(model):
     """
-    尽量兼容：
+    Support as many layouts as possible:
       - AutoModel: model.layers
       - AutoModelForCausalLM: model.model.layers
-      - Qwen/LLaMA 类结构
-      - 某些 wrapper: module.model.layers / base_model.model.layers
+      - Qwen/LLaMA-style layouts
+      - Some wrappers: module.model.layers / base_model.model.layers
     """
     candidate_paths = [
         "layers",
@@ -263,7 +307,7 @@ def _find_transformer_layers(model):
         if obj is not None and isinstance(obj, torch.nn.ModuleList):
             return path, obj
 
-    # fallback：找名字像 decoder layer 的模块
+    # Fallback: find modules whose names resemble decoder layers.
     rows = []
     for name, mod in model.named_modules():
         cls = mod.__class__.__name__.lower()
@@ -291,15 +335,15 @@ def install_backward_memory_hooks(
     max_param_hooks_per_layer=2,
 ):
     """
-    返回 handles，训练结束后需要 remove。
+    Return hook handles; remove them after training.
 
     hook_every:
-      每隔多少层打一次 hook。想精确定位就设 1。
-      层很多、日志太多时可以设 4/8。
+      Run a hook every N layers. Set to 1 for precise localization.
+      Use 4 or 8 when there are many layers and logs become too verbose.
 
     include_param_grad_hooks:
-      是否额外给每层前几个参数挂 Tensor grad hook。
-      这个日志会更多，但可以看到 grad 具体在哪个参数附近 ready。
+      Whether to add Tensor gradient hooks to the first few parameters of each layer.
+      This adds more logs but shows which parameter is near gradient readiness.
     """
     rank = int(os.environ.get("RANK", "0"))
     handles = []
@@ -1072,8 +1116,8 @@ class FSDPActor(FSDPModelManager, Worker):
 
     def _tensor_local_numel_and_bytes(self, p):
         """
-        兼容普通 Tensor / DTensor。
-        返回:
+        Supports regular Tensor and DTensor.
+        Returns:
         logical_numel, local_numel, logical_bytes, local_bytes, dtype_str, device_str
         """
         try:
@@ -1089,7 +1133,7 @@ class FSDPActor(FSDPModelManager, Worker):
         local_numel = logical_numel
         local_elem_size = elem_size
 
-        # DTensor 通常有 to_local()
+        # DTensor typically provides to_local().
         try:
             if hasattr(p, "to_local"):
                 lp = p.to_local()
@@ -1131,7 +1175,7 @@ class FSDPActor(FSDPModelManager, Worker):
         for name, module in self.model.named_modules():
             cls_name = module.__class__.__name__
 
-            # 适配你现在看到的 FSDPQwen2DecoderLayer / FSDPEmbedding 等
+            # Support FSDPQwen2DecoderLayer, FSDPEmbedding, and similar modules.
             if "FSDP" not in cls_name and "FullySharded" not in cls_name:
                 continue
 
@@ -1143,7 +1187,7 @@ class FSDPActor(FSDPModelManager, Worker):
             device_counter = {}
             n_params = 0
 
-            # root module 会递归统计全模型；也可以保留，但解释时要注意
+            # The root module recursively counts the whole model; retain it only with that in mind.
             for p_name, p in module.named_parameters(recurse=True):
                 n_params += 1
                 (
@@ -1201,6 +1245,7 @@ class FSDPActor(FSDPModelManager, Worker):
                 flush=True,
             )
 
+    @Worker.timer("training_step")
     def training_step(
         self, batch: dict[str, torch.Tensor] | BatchResizingIterator
     ) -> tuple[dict[str, torch.Tensor], float, list[float]]:
@@ -1328,8 +1373,8 @@ class FSDPActor(FSDPModelManager, Worker):
 
             bwd_hook_handles = install_backward_memory_hooks(
                 self.model,
-                hook_every=1,                 # 精确定位时设 1
-                log_all_ranks=False,          # 先只看 rank0；如果 OOM rank 不确定，再改 True
+                hook_every=1,                 # Use 1 for precise localization.
+                log_all_ranks=False,          # Start with rank 0 only; set True if the OOM rank is uncertain.
                 reset_peak_before_backward=True,
                 include_param_grad_hooks=False,
             )
@@ -1373,8 +1418,8 @@ class FSDPActor(FSDPModelManager, Worker):
 
             self._print_mem(f"training_step: mb={idx}: after metrics update")
 
-            # 可选：释放一些明显不再需要的局部引用，帮助判断是否有中间张量被保留。
-            # 注意这不会破坏 autograd，因为 backward 已经完成。
+            # Optional: release clearly unused local references to determine whether intermediate tensors remain retained.
+            # This does not break autograd because backward has completed.
             self._print_mem(f"training_step: mb={idx}: before delete local tensors")
 
             try:
@@ -1393,8 +1438,8 @@ class FSDPActor(FSDPModelManager, Worker):
 
         # ------------------------------------------------------------
         # 4. optimizer step
-        # 如果日志停在 before optimizer_step，强烈怀疑 Adam state lazy init、
-        # grad norm、unscale、clip_grad 或 optimizer.step 内部峰值。
+        # If logging stops at before optimizer_step, suspect Adam state lazy initialization,
+        # gradient norm, unscale, clip_grad, or a peak inside optimizer.step.
         # ------------------------------------------------------------
         self._print_mem(
             "training_step: before optimizer_step",
@@ -1422,6 +1467,7 @@ class FSDPActor(FSDPModelManager, Worker):
         rollout_train_kl = compute_rollout_train_kl(m_batch, loss_mask)
 
         # aggregate metrics across micro-batches
+        explained_variance_stats = pop_critic_explained_variance_stats(mbs_metrics_list)
         mean_metric_dict = {
             key: torch.mean(torch.stack(value))
             for key, value in mbs_metrics_list.items()
@@ -1435,6 +1481,13 @@ class FSDPActor(FSDPModelManager, Worker):
         mean_metric_dict = all_reduce_dict(
             mean_metric_dict, op=torch.distributed.ReduceOp.AVG
         )
+        if explained_variance_stats:
+            reduced_stats = all_reduce_dict(
+                explained_variance_stats, op=torch.distributed.ReduceOp.SUM
+            )
+            mean_metric_dict[CRITIC_EXPLAINED_VARIANCE_KEY] = (
+                compute_critic_explained_variance_from_stats(reduced_stats).item()
+            )
 
         self._print_mem("training_step: after all_reduce_dict")
 
@@ -1501,8 +1554,8 @@ class FSDPActor(FSDPModelManager, Worker):
     
     def _debug_mem_rank(self):
         """
-        尽量获取全局 rank。优先使用 torch.distributed，其次用环境变量，
-        最后尝试 self 上常见的 rank 属性。
+        Retrieve the global rank when possible. Prefer torch.distributed, then environment variables,
+        and finally common rank attributes on self.
         """
         try:
             if dist is not None and dist.is_available() and dist.is_initialized():
@@ -1536,8 +1589,8 @@ class FSDPActor(FSDPModelManager, Worker):
 
     def _should_print_mem(self):
         """
-        默认只让 rank0 打印。
-        如果想所有 rank 都打印，可以设置：
+        Only rank 0 prints by default.
+        To print from every rank, set:
             export DEBUG_MEM_ALL_RANKS=1
         """
         if os.environ.get("DEBUG_MEM_ALL_RANKS", "0") == "1":
@@ -1562,10 +1615,10 @@ class FSDPActor(FSDPModelManager, Worker):
 
     def _print_mem(self, tag, *, reset_peak=False, use_smi=False):
         """
-        打印当前进程视角下的 torch.npu 显存。
-        - allocated: 当前 PyTorch tensor 实际占用
-        - reserved: PyTorch/CANN allocator 当前保留
-        - max_*: 进程启动以来，或 reset_peak 后的峰值
+        Print torch.npu memory from the current process perspective.
+        - allocated: memory currently used by PyTorch tensors
+        - reserved: memory currently reserved by the PyTorch/CANN allocator
+        - max_*: peak since process start or the latest reset_peak
         """
         if not self._should_print_mem():
             return
@@ -1664,6 +1717,7 @@ class FSDPActor(FSDPModelManager, Worker):
                     flush=True,
                 )
 
+    @Worker.timer("run_training")
     def run_training(
         self, input_channel: Channel, do_offload=False
     ) -> tuple[dict, list]:
@@ -1756,6 +1810,7 @@ class FSDPActor(FSDPModelManager, Worker):
         return rollout_metrics, training_metrics_list
 
     # Advantages and returns
+    @Worker.timer("compute_advantages_and_returns")
     def compute_advantages_and_returns(self, batch: dict[str, torch.Tensor]):
         """Compute the advantages and returns.
 
@@ -1802,6 +1857,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         # stage_num: default to 2, use for pipeline rollout process
         self.stage_num = cfg.rollout.pipeline_stage_num
         self.enable_offload = self.cfg.actor.get("enable_offload", False)
+        self._opd_teacher_model = None
         self.entropy_op_type = self.cfg.algorithm.get("entropy_op_type", "torch")
 
         self.enable_sft_co_train = cfg.actor.get("enable_sft_co_train", False)
@@ -2019,12 +2075,18 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         """
         Compute the advantages and returns.
         """
+        if self.cfg.algorithm.adv_type == "opd":
+            self.compute_opd_teacher_logprobs()
+
         kwargs = {
             "task_type": self.cfg.runner.task_type,
             "adv_type": self.cfg.algorithm.adv_type,
             "rewards": self.rollout_batch["rewards"],
             "dones": self.rollout_batch["dones"],
             "values": self.rollout_batch.get("prev_values", None),
+            "prev_logprobs": self.rollout_batch.get("prev_logprobs", None),
+            "teacher_logprobs": self.rollout_batch.get("teacher_logprobs", None),
+            "num_action_chunks": self.cfg.actor.model.num_action_chunks,
             "gamma": self.cfg.algorithm.get("gamma", 1),
             "gae_lambda": self.cfg.algorithm.get("gae_lambda", 1),
             "group_size": self.cfg.algorithm.get("group_size", 8),
@@ -2043,6 +2105,91 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
 
         rollout_metrics = compute_rollout_metrics(self.rollout_batch)
         return rollout_metrics
+
+    @Worker.timer("actor/compute_opd_teacher_logprobs")
+    def compute_opd_teacher_logprobs(self) -> None:
+        assert self.rollout_batch.get("teacher_logprobs", None) is None, (
+            "OPD teacher_logprobs must be computed after rollout on actor workers."
+        )
+        assert self.cfg.rollout.get("expert_model", None) is not None, (
+            "OPD requires rollout.expert_model as teacher model config."
+        )
+        assert "forward_inputs" in self.rollout_batch, (
+            "OPD teacher logprob computation requires rollout forward_inputs."
+        )
+        assert "prev_logprobs" in self.rollout_batch, (
+            "OPD teacher logprob computation requires student prev_logprobs."
+        )
+        assert SupportedModel(self.cfg.actor.model.model_type) in [
+            SupportedModel.OPENVLA,
+            SupportedModel.OPENVLA_OFT,
+        ], "OPD teacher logprob computation currently supports OpenVLA models."
+
+        prev_logprobs = self.rollout_batch["prev_logprobs"]
+        time_dim, batch_dim = prev_logprobs.shape[:2]
+        flat_batch_size = time_dim * batch_dim
+
+        assert self.enable_offload and self.is_weight_offloaded, (
+            "OPD teacher logprob computation expects actor weights to be "
+            "offloaded before moving the teacher model to GPU."
+        )
+        teacher_model = self._get_opd_teacher_model()
+        teacher_model.to(self.device)
+
+        flat_forward_inputs = flatten_nested_tensor_time_batch(
+            self.rollout_batch["forward_inputs"], ("forward_inputs",)
+        )
+        num_chunks = (
+            flat_batch_size + self.cfg.actor.micro_batch_size - 1
+        ) // self.cfg.actor.micro_batch_size
+        teacher_logprobs = []
+        kwargs = {
+            "temperature": self.cfg.rollout.sampling_params.temperature_train,
+            "top_k": self.cfg.rollout.sampling_params.top_k,
+        }
+        with torch.no_grad():
+            for micro_batch in split_dict_to_chunk(flat_forward_inputs, num_chunks):
+                micro_batch = put_tensor_device(micro_batch, self.device)
+                with self.amp_context:
+                    teacher_output = teacher_model(
+                        forward_inputs=micro_batch,
+                        compute_logprobs=True,
+                        compute_entropy=False,
+                        compute_values=False,
+                        use_cache=False,
+                        **kwargs,
+                    )
+                teacher_logprobs.append(teacher_output["logprobs"].detach().cpu())
+
+        teacher_logprobs = torch.cat(teacher_logprobs, dim=0)
+        expected_shape = (flat_batch_size, *prev_logprobs.shape[2:])
+        assert teacher_logprobs.shape == expected_shape, (
+            f"teacher_logprobs shape {teacher_logprobs.shape} must match "
+            f"flattened student logprobs shape {expected_shape}."
+        )
+        self.rollout_batch["teacher_logprobs"] = teacher_logprobs.reshape(
+            time_dim, batch_dim, *teacher_logprobs.shape[1:]
+        )
+
+        teacher_model.to("cpu")
+        clear_memory()
+
+    def _get_opd_teacher_model(self):
+        if self._opd_teacher_model is None:
+            teacher_model_config = build_expert_model_config(
+                self.cfg, self.cfg.actor.model
+            )
+            teacher_model = get_model(teacher_model_config)
+            if self.cfg.runner.get("expert_ckpt_path", None):
+                teacher_model_dict = torch.load(
+                    self.cfg.runner.expert_ckpt_path, map_location="cpu"
+                )
+                teacher_model.load_state_dict(teacher_model_dict)
+            teacher_model.eval()
+            teacher_model.requires_grad_(False)
+            teacher_model.to("cpu")
+            self._opd_teacher_model = teacher_model
+        return self._opd_teacher_model
 
     def _build_sft_data_loader(self):
         if SupportedModel(self.cfg.actor.model.model_type) in [SupportedModel.OPENPI]:
@@ -2129,6 +2276,19 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         if self.is_optimizer_offloaded:
             self.load_optimizer(self.device)
 
+        if self.cfg.algorithm.loss_type == "opd":
+            target_steps = int(self.rollout_batch["advantages"].shape[0])
+            for key in [
+                "prev_logprobs",
+                "forward_inputs",
+                "loss_mask",
+                "loss_mask_sum",
+            ]:
+                assert key in self.rollout_batch, f"OPD training requires {key}."
+                self.rollout_batch[key] = trim_nested_tensor_time_dim(
+                    self.rollout_batch[key], target_steps, (key,)
+                )
+
         self.model.train()
         rollout_size = (
             self.rollout_batch["prev_logprobs"].shape[0]
@@ -2199,10 +2359,18 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         self.lr_scheduler.step()
         self.optimizer.zero_grad()
         clear_memory()
+        explained_variance_stats = pop_critic_explained_variance_stats(metrics)
         mean_metric_dict = {key: np.mean(value) for key, value in metrics.items()}
         mean_metric_dict = all_reduce_dict(
             mean_metric_dict, op=torch.distributed.ReduceOp.AVG
         )
+        if explained_variance_stats:
+            reduced_stats = all_reduce_dict(
+                explained_variance_stats, op=torch.distributed.ReduceOp.SUM
+            )
+            mean_metric_dict[CRITIC_EXPLAINED_VARIANCE_KEY] = (
+                compute_critic_explained_variance_from_stats(reduced_stats).item()
+            )
 
         return mean_metric_dict
 

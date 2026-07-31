@@ -25,3 +25,4 @@ PKG-INFO
 logs/
 kernel_meta/
 fusion_result.json
+extra-info/

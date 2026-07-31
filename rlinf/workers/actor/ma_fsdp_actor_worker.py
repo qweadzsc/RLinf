@@ -226,11 +226,11 @@ def _get_submodule_by_path(model, path):
 
 def _find_transformer_layers(model):
     """
-    尽量兼容：
+    Support as many layouts as possible:
       - AutoModel: model.layers
       - AutoModelForCausalLM: model.model.layers
-      - Qwen/LLaMA 类结构
-      - 某些 wrapper: module.model.layers / base_model.model.layers
+      - Qwen/LLaMA-style layouts
+      - Some wrappers: module.model.layers / base_model.model.layers
     """
     candidate_paths = [
         "layers",
@@ -253,7 +253,7 @@ def _find_transformer_layers(model):
         if obj is not None and isinstance(obj, torch.nn.ModuleList):
             return path, obj
 
-    # fallback：找名字像 decoder layer 的模块
+    # Fallback: find modules whose names resemble decoder layers.
     rows = []
     for name, mod in model.named_modules():
         cls = mod.__class__.__name__.lower()
@@ -281,15 +281,15 @@ def install_backward_memory_hooks(
     max_param_hooks_per_layer=2,
 ):
     """
-    返回 handles，训练结束后需要 remove。
+    Return hook handles; remove them after training.
 
     hook_every:
-      每隔多少层打一次 hook。想精确定位就设 1。
-      层很多、日志太多时可以设 4/8。
+      Run a hook every N layers. Set to 1 for precise localization.
+      Use 4 or 8 when there are many layers and logs become too verbose.
 
     include_param_grad_hooks:
-      是否额外给每层前几个参数挂 Tensor grad hook。
-      这个日志会更多，但可以看到 grad 具体在哪个参数附近 ready。
+      Whether to add Tensor gradient hooks to the first few parameters of each layer.
+      This adds more logs but shows which parameter is near gradient readiness.
     """
     rank = int(os.environ.get("RANK", "0"))
     handles = []
@@ -593,19 +593,19 @@ class MAFSDPActor(FSDPActor):
             )
         micro_batches = list(micro_batches_iter)
 
-        prev_logprobs, ref_logprobs = None, None
+        recomputed_logprobs, ref_logprobs = None, None
 
-        # Prev logprobs
-        prev_logprobs = torch.cat(
+        # Recompute logprobs with the actor model.
+        recomputed_logprobs = torch.cat(
             [self.forward_batch(batch) for batch in micro_batches]
         ).cpu()
 
         if self.enable_dynamic_batch_size:
-            assert len(indices) == prev_logprobs.size(0), (
+            assert len(indices) == recomputed_logprobs.size(0), (
                 f"Dynamic batch size indices length {len(indices)} does not equal "
-                f"output length {prev_logprobs.size(0)}"
+                f"output length {recomputed_logprobs.size(0)}"
             )
-            prev_logprobs = prev_logprobs[revert_indices]
+            recomputed_logprobs = recomputed_logprobs[revert_indices]
 
         # Ref logprobs
         if compute_ref_logprobs:
@@ -624,7 +624,7 @@ class MAFSDPActor(FSDPActor):
                     )
                     ref_logprobs = ref_logprobs[revert_indices]
 
-        return prev_logprobs, ref_logprobs
+        return recomputed_logprobs, ref_logprobs
 
     def run_inference(
         self,
@@ -662,16 +662,13 @@ class MAFSDPActor(FSDPActor):
         self.model.eval()
         with self.worker_timer():
             with torch.no_grad():
-                prev_logprobs, ref_logprobs = self.inference_step(
+                recomputed_logprobs, ref_logprobs = self.inference_step(
                     merged_batch,
                     rollout_result,
                     compute_ref_logprobs,
                 )
 
-            if rollout_result.rollout_logprobs is not None:
-                rollout_result.recompute_prev_logprobs = prev_logprobs
-            else:
-                rollout_result.prev_logprobs = prev_logprobs
+            rollout_result.recomputed_logprobs = recomputed_logprobs
 
             if compute_ref_logprobs:
                 rollout_result.ref_logprobs = ref_logprobs
@@ -723,7 +720,9 @@ class MAFSDPActor(FSDPActor):
             logprobs, entropy = self.forward_batch(m_batch, True)
 
             # batch for backward
-            prev_logprobs = m_batch["prev_logprobs"]
+            old_logprobs = m_batch.get("recomputed_logprobs")
+            if old_logprobs is None:
+                old_logprobs = m_batch["rollout_logprobs"]
             advantages = m_batch["advantages"] * m_batch["loss_scales"]
             ref_logprobs = None
             if "ref_logprobs" in m_batch:
@@ -752,7 +751,7 @@ class MAFSDPActor(FSDPActor):
                 loss_type=self.cfg.algorithm.loss_type,
                 loss_agg_func=self.loss_agg_func,
                 logprobs=logprobs,
-                old_logprobs=prev_logprobs,
+                old_logprobs=old_logprobs,
                 advantages=advantages,
                 clip_ratio_c=clip_ratio_c,
                 clip_ratio_low=clip_ratio_low,
@@ -902,7 +901,10 @@ class MAFSDPActor(FSDPActor):
             batches,
             self.cfg.algorithm.group_size,
         )
-        assert "prev_logprobs" in global_batch
+        assert (
+            "recomputed_logprobs" in global_batch
+            or "rollout_logprobs" in global_batch
+        )
 
         global_batch = self.compute_advantages_and_returns(global_batch)
         global_batch["loss_scales"] = torch.ones_like(
@@ -978,6 +980,10 @@ class MAFSDPActor(FSDPActor):
         with self.worker_timer():
             if batch.get("advantages", None) is None:
                 mask = batch["response_mask"]
+                logprob = batch.get("recomputed_logprobs")
+                if logprob is None:
+                    logprob = batch.get("rollout_logprobs")
+
                 advantages, _ = calculate_adv_and_returns(
                     task_type=self.task_type,
                     adv_type=self.cfg.algorithm.adv_type,
@@ -989,9 +995,7 @@ class MAFSDPActor(FSDPActor):
                     idx_to_traj=batch["idx_to_traj"],
                     kl_beta=self.reinpp_kl_beta,
                     kl_penalty_type=self.kl_penalty_type,
-                    logprob=batch["prev_logprobs"].to(Worker.torch_device_type)
-                    if "prev_logprobs" in batch
-                    else None,
+                    logprob=logprob.to(Worker.torch_device_type),
                     ref_logprob=batch["ref_logprobs"].to(Worker.torch_device_type)
                     if "ref_logprobs" in batch
                     else None,
