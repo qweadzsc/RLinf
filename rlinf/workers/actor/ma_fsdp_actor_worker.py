@@ -13,18 +13,10 @@
 # limitations under the License.
 
 import os
-import time
-import subprocess
-from functools import partial
 from typing import Optional
 
-import numpy as np
 import torch
 from omegaconf import DictConfig
-from torch import nn
-from torch.distributed.tensor import DTensor
-from torch.multiprocessing.reductions import reduce_tensor
-from torch.utils import _pytree
 
 import rlinf.algorithms  # noqa: F401
 from rlinf.algorithms.registry import (
@@ -35,63 +27,33 @@ from rlinf.algorithms.registry import (
 from rlinf.algorithms.utils import (
     kl_penalty,
 )
-from rlinf.config import SupportedModel, torch_dtype_from_precision
-from rlinf.data.embodied_io_struct import Trajectory, convert_trajectories_to_batch
 from rlinf.data.io_struct import BatchResizingIterator, DynamicRolloutResult
-from rlinf.hybrid_engines.fsdp.fsdp_model_manager import (
-    FSDPModelManager,
-)
 from rlinf.hybrid_engines.fsdp.utils import (
     pack_fsdp_input,
-    prepare_pack_fsdp,
     unpack_fsdp_logprobs,
     unpack_sequences,
 )
-from rlinf.models import get_model
-from rlinf.models.embodiment.base_policy import ForwardType
-from rlinf.scheduler import Channel, Cluster, CollectiveGroupOptions, Worker
+from rlinf.scheduler import Channel, Worker
 from rlinf.utils.data_iter_utils import (
     get_iterator_k_split,
     get_reverse_idx,
     get_seqlen_balanced_partitions,
-    split_dynamic_batch_size,
 )
 from rlinf.utils.distributed import (
     RolloutDataBalance,
     all_reduce_dict,
-    all_reduce_int,
     compute_rollout_metrics_dynamic,
-    masked_normalization,
-)
-from rlinf.utils.distributed import (
-    compute_rollout_metrics as compute_math_rollout_metrics,
 )
 from rlinf.utils.metric_utils import (
     append_to_dict,
-    compute_loss_mask,
-    compute_rollout_metrics,
-    compute_split_num,
-)
-from rlinf.utils.nested_dict_process import (
-    put_tensor_device,
-    split_dict_to_chunk,
 )
 from rlinf.utils.placement import (
-    HybridComponentPlacement,
     ModelParallelComponentPlacement,
 )
-from rlinf.utils.pytree import register_pytree_dataclasses
 from rlinf.utils.utils import (
-    clear_memory,
     compute_entropy_from_logits,
-    compute_logprobs_from_logits,
     cpu_dict,
-    get_loss_agg_func,
-    masked_mean,
-    reshape_entropy,
 )
-from rlinf.workers.rollout.utils import RankMapper
-
 from rlinf.workers.actor.fsdp_actor_worker import (
     FSDPActor,
 )
@@ -138,6 +100,7 @@ def _get_device_type():
     if hasattr(torch, "npu"):
         try:
             import torch_npu  # noqa: F401
+
             if torch.npu.is_available():
                 return "npu"
         except Exception:
@@ -260,8 +223,10 @@ def _find_transformer_layers(model):
         if (
             "decoderlayer" in cls
             or "transformerlayer" in cls
-            or "qwen" in cls and "layer" in cls
-            or "llama" in cls and "layer" in cls
+            or "qwen" in cls
+            and "layer" in cls
+            or "llama" in cls
+            and "layer" in cls
         ):
             rows.append((name, mod))
 
@@ -319,11 +284,13 @@ def install_backward_memory_hooks(
     def make_bwd_pre(name):
         def hook(module, grad_output):
             _mem_report(f"BWD_PRE  {name}", rank=rank, log_all_ranks=log_all_ranks)
+
         return hook
 
     def make_bwd_post(name):
         def hook(module, grad_input, grad_output):
             _mem_report(f"BWD_POST {name}", rank=rank, log_all_ranks=log_all_ranks)
+
         return hook
 
     def make_param_grad_hook(name):
@@ -335,6 +302,7 @@ def install_backward_memory_hooks(
                 log_all_ranks=log_all_ranks,
             )
             return grad
+
         return hook
 
     if isinstance(layers, torch.nn.ModuleList):
@@ -350,13 +318,17 @@ def install_backward_memory_hooks(
             handles.append(layer.register_full_backward_pre_hook(make_bwd_pre(name)))
         except Exception as e:
             if rank == 0 or log_all_ranks:
-                print(f"[BWD_HOOK][rank={rank}] failed pre hook {name}: {e}", flush=True)
+                print(
+                    f"[BWD_HOOK][rank={rank}] failed pre hook {name}: {e}", flush=True
+                )
 
         try:
             handles.append(layer.register_full_backward_hook(make_bwd_post(name)))
         except Exception as e:
             if rank == 0 or log_all_ranks:
-                print(f"[BWD_HOOK][rank={rank}] failed post hook {name}: {e}", flush=True)
+                print(
+                    f"[BWD_HOOK][rank={rank}] failed post hook {name}: {e}", flush=True
+                )
 
         if include_param_grad_hooks:
             n = 0
@@ -430,7 +402,7 @@ class MAFSDPActor(FSDPActor):
         if batch["input_ids"].shape[0] == 0:
             return None
         return torch.distributed.group.WORLD
-    
+
     def get_batch(
         self, channel: Channel
     ) -> tuple[dict[str, torch.Tensor], DynamicRolloutResult]:
@@ -466,10 +438,9 @@ class MAFSDPActor(FSDPActor):
             max_seq_len_unpack = seq_length
 
             if "prompt_lengths" in m_batch and "response_lengths" in m_batch:
-                seq_lens = (
-                    m_batch["prompt_lengths"].to(input_ids.device)
-                    + m_batch["response_lengths"].to(input_ids.device)
-                )
+                seq_lens = m_batch["prompt_lengths"].to(input_ids.device) + m_batch[
+                    "response_lengths"
+                ].to(input_ids.device)
             else:
                 # Fallback: DynamicRolloutResult attention_mask is True for
                 # all valid prompt+response tokens.
@@ -902,8 +873,7 @@ class MAFSDPActor(FSDPActor):
             self.cfg.algorithm.group_size,
         )
         assert (
-            "recomputed_logprobs" in global_batch
-            or "rollout_logprobs" in global_batch
+            "recomputed_logprobs" in global_batch or "rollout_logprobs" in global_batch
         )
 
         global_batch = self.compute_advantages_and_returns(global_batch)
@@ -912,7 +882,9 @@ class MAFSDPActor(FSDPActor):
         ).masked_fill(~global_batch["response_mask"], 0)
 
         if self.cfg.algorithm.normalize_advantages:
-            raise AssertionError("normalize_advantages is not implemented in multi-agent")
+            raise AssertionError(
+                "normalize_advantages is not implemented in multi-agent"
+            )
 
         rollout_metrics = self._compute_rollout_metrics(global_batch)
 

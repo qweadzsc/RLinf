@@ -18,10 +18,12 @@ import logging
 import queue
 import time
 import warnings
-from typing import Any, Optional
 
-import datasets
 import torch
+from build_index import (
+    Config,
+    load_corpus,
+)
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     CollectionStatus,
@@ -32,11 +34,6 @@ from qdrant_client.models import (
 )
 from qdrant_encoder import Encoder
 from tqdm import tqdm
-
-from build_index import (
-    load_corpus,
-    Config,
-    )
 
 
 def set_global(retrieval_method, config):
@@ -244,7 +241,7 @@ class QdrantIndexBuilder:
         logging.info(
             f"Successfully inserted {corpus_size} documents into collection '{self.collection_name}'"
         )
-        
+
 
 if __name__ == "__main__":
     from multiprocessing import set_start_method

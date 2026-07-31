@@ -38,7 +38,7 @@ def clear_memory(sync=True):
     gc.collect()
     try:
         Worker.torch_platform.ipc_collect()
-    except:
+    except Exception:
         pass
     Worker.torch_platform.empty_cache()
 
@@ -678,7 +678,7 @@ def warmup_optimizer_state(optimizer: Optimizer) -> None:
 
     for p in all_params:
         p.grad = saved_grads[p]
-        
+
 
 @torch.no_grad()
 def init_adamw_optimizer_state(optimizer):
@@ -712,6 +712,7 @@ def init_adamw_optimizer_state(optimizer):
             device=p.device,
         )
 
+    all_params = []
     for group in optimizer.param_groups:
         amsgrad = group.get("amsgrad", False)
         capturable = group.get("capturable", False)
@@ -720,10 +721,10 @@ def init_adamw_optimizer_state(optimizer):
         for p in group.get("params", []):
             if p is None:
                 continue
-
             state = optimizer.state[p]
             if len(state) > 0:
                 continue
+            all_params.append(p)
 
             if isinstance(p, DTensor):
                 local_device = p.to_local().device
@@ -744,11 +745,9 @@ def init_adamw_optimizer_state(optimizer):
             if amsgrad:
                 state["max_exp_avg_sq"] = zeros_like_state(p)
 
-    # The empty step above advances each Adam param's step counter to 1, which biases
-    # the first real update through bias correction and diverges from a freshly-built
-    # optimizer. Reset the step counter to 0 so this state initialization is a true
-    # no-op for training dynamics, while preserving the already-zeroed exp_avg/exp_avg_sq
-    # entries so load_state_dict still finds initialized state.
+    # Keep newly initialized step counters at zero so this helper does not advance
+    # training dynamics, while preserving exp_avg and exp_avg_sq entries for
+    # load_state_dict.
     for p in all_params:
         st = optimizer.state.get(p, {})
         step = st.get("step", None)

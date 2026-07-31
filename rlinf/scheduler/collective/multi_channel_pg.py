@@ -13,9 +13,9 @@
 # limitations under the License.
 
 import logging
+import traceback
 from datetime import timedelta
 from typing import Optional
-import traceback
 
 import torch
 import torch.distributed as dist
@@ -920,7 +920,7 @@ class MultiChannelProcessGroup:
 
                     try:
                         backend_class = creator_fn(dist_backend_opts, pg_options)
-                    except BaseException as e:
+                    except BaseException:
                         traceback.print_exc()
                         raise
 

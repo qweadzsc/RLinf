@@ -21,13 +21,13 @@ import torch
 from omegaconf import DictConfig
 
 from rlinf.scheduler import Worker
+from rlinf.scheduler.hardware.accelerators import AcceleratorUtil
 from rlinf.utils.data_iter_utils import (
     get_iterator_k_split,
     merge_list,
     merge_tensor,
     split_list,
 )
-from rlinf.scheduler.hardware.accelerators import AcceleratorUtil
 
 if TYPE_CHECKING:
     from vllm.outputs import CompletionOutput
@@ -573,30 +573,46 @@ class RolloutResult:
 
         max_response_len = training_seq_length - data_seq_length
 
-        target_device = AcceleratorUtil.get_device_type(AcceleratorUtil.get_accelerator_type())
+        target_device = AcceleratorUtil.get_device_type(
+            AcceleratorUtil.get_accelerator_type()
+        )
         # when do_down_sample is enabled, there might be no valid rewards
         if self.rewards is not None and self.rewards.numel() == 0:
             batch = {
                 "input_ids": torch.zeros(0, dtype=torch.long, device=target_device),
-                "attention_mask": torch.zeros(0, dtype=torch.bool, device=target_device),
+                "attention_mask": torch.zeros(
+                    0, dtype=torch.bool, device=target_device
+                ),
                 "response_mask": torch.zeros(0, dtype=torch.bool, device=target_device),
                 "is_end": torch.zeros(0, dtype=torch.bool, device=target_device),
                 "position_ids": torch.zeros(0, dtype=torch.long, device=target_device),
-                "prompt_lengths": torch.zeros(0, dtype=torch.long, device=target_device),
-                "response_lengths": torch.zeros(0, dtype=torch.long, device=target_device),
+                "prompt_lengths": torch.zeros(
+                    0, dtype=torch.long, device=target_device
+                ),
+                "response_lengths": torch.zeros(
+                    0, dtype=torch.long, device=target_device
+                ),
             }
             if self.advantages is not None:
-                batch["advantages"] = torch.zeros(0, dtype=torch.float32, device=target_device)
+                batch["advantages"] = torch.zeros(
+                    0, dtype=torch.float32, device=target_device
+                )
             if self.recomputed_logprobs is not None:
                 batch["recomputed_logprobs"] = torch.zeros(
                     0, dtype=torch.float32, device=target_device
                 )
             if self.ref_logprobs is not None:
-                batch["ref_logprobs"] = torch.zeros(0, dtype=torch.float32, device=target_device)
+                batch["ref_logprobs"] = torch.zeros(
+                    0, dtype=torch.float32, device=target_device
+                )
             if self.rewards is not None:
-                batch["rewards"] = torch.zeros(0, dtype=torch.float32, device=target_device)
+                batch["rewards"] = torch.zeros(
+                    0, dtype=torch.float32, device=target_device
+                )
             if self.rollout_logprobs is not None:
-                batch["rollout_logprobs"] = torch.zeros(0, dtype=torch.float32, device=target_device)
+                batch["rollout_logprobs"] = torch.zeros(
+                    0, dtype=torch.float32, device=target_device
+                )
             return batch
 
         prompt_lengths = torch.tensor(self.prompt_lengths)
@@ -947,7 +963,9 @@ class DynamicRolloutResult:
             pad_token=pad_token,
         )
 
-        target_device = AcceleratorUtil.get_device_type(AcceleratorUtil.get_accelerator_type())
+        target_device = AcceleratorUtil.get_device_type(
+            AcceleratorUtil.get_accelerator_type()
+        )
         batch = {
             "idx_to_traj": self.idx_to_traj,
             "input_ids": input_ids.to(target_device),
@@ -971,7 +989,9 @@ class DynamicRolloutResult:
                 batch["rewards"] = self.rewards.to(target_device)
             else:
                 batch["rewards"] = (
-                    torch.as_tensor(self.rewards, dtype=torch.float).to(target_device).flatten()
+                    torch.as_tensor(self.rewards, dtype=torch.float)
+                    .to(target_device)
+                    .flatten()
                 )
 
         if self.rollout_logprobs is not None:
@@ -988,7 +1008,9 @@ class DynamicRolloutResult:
             batch["rollout_logprobs"] = logprobs.to(Worker.torch_device_type)
 
         if self.recomputed_logprobs is not None:
-            batch["recomputed_logprobs"] = self.recomputed_logprobs.to(Worker.torch_device_type)
+            batch["recomputed_logprobs"] = self.recomputed_logprobs.to(
+                Worker.torch_device_type
+            )
 
         if self.ref_logprobs is not None:
             batch["ref_logprobs"] = self.ref_logprobs.to(Worker.torch_device_type)
@@ -1022,15 +1044,9 @@ class DynamicRolloutResult:
             "position_ids": torch.zeros(
                 *pad_seq_shape, dtype=torch.long, device=target_device
             ),
-            "is_end": torch.zeros(
-                1, dtype=torch.bool, device=target_device
-            ),
-            "prompt_lengths": torch.zeros(
-                1, dtype=torch.int32, device=target_device
-            ),
-            "response_lengths": torch.zeros(
-                1, dtype=torch.int32, device=target_device
-            ),
+            "is_end": torch.zeros(1, dtype=torch.bool, device=target_device),
+            "prompt_lengths": torch.zeros(1, dtype=torch.int32, device=target_device),
+            "response_lengths": torch.zeros(1, dtype=torch.int32, device=target_device),
             "ref_logprobs": torch.zeros(
                 *pad_seq_shape, dtype=torch.float32, device=target_device
             ),
@@ -1040,9 +1056,7 @@ class DynamicRolloutResult:
             "rollout_logprobs": torch.zeros(
                 *pad_seq_shape, dtype=torch.float32, device=target_device
             ),
-            "rewards": torch.zeros(
-                1, dtype=torch.float32, device=target_device
-            ),
+            "rewards": torch.zeros(1, dtype=torch.float32, device=target_device),
             "advantages": torch.zeros(
                 *pad_seq_shape, dtype=torch.float32, device=target_device
             ),

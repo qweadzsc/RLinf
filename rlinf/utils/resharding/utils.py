@@ -416,7 +416,9 @@ def _gather_pp_group_tensor_and_reshard(
         tensor_shape = [None]
 
     torch.distributed.broadcast_object_list(tensor_shape, pp_src_idx, group=group)
-    target_device = AcceleratorUtil.get_device_type(AcceleratorUtil.get_accelerator_type())
+    target_device = AcceleratorUtil.get_device_type(
+        AcceleratorUtil.get_accelerator_type()
+    )
 
     if tensor_shape[0] is None:
         return None
