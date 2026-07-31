@@ -31,6 +31,7 @@ from sglang.srt.managers.scheduler import (
 )
 
 from rlinf.scheduler import Worker, WorkerAddress
+from rlinf.scheduler.hardware.accelerators import AcceleratorType, AcceleratorUtil
 from rlinf.utils.placement import (
     ModelParallelComponentPlacement,
     RolloutSyncMode,
@@ -106,12 +107,12 @@ class Scheduler(_Scheduler):
             free_gpu_memory /= 2**30
             total_gpu_memory /= 2**30
 
-        memory_allocated = _platform_call(
-            platform, "memory_allocated", current_device, 0.0
-        ) / 2**30
-        memory_reserved = _platform_call(
-            platform, "memory_reserved", current_device, 0.0
-        ) / 2**30
+        memory_allocated = (
+            _platform_call(platform, "memory_allocated", current_device, 0.0) / 2**30
+        )
+        memory_reserved = (
+            _platform_call(platform, "memory_reserved", current_device, 0.0) / 2**30
+        )
 
         self._rlinf_worker.log_info(
             f"[dp {self._rlinf_worker.get_parent_rank()}-tp {self.tp_rank}] {text} "
