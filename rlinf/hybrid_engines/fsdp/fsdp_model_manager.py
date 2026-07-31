@@ -142,6 +142,17 @@ class FSDPModelManager:
         cfg = self._cfg
         use_gptq = cfg.model.get("gptq_model", False)
         load_in_8bit = cfg.model.get("load_in_8bit", False)
+        init_model_with_meta_device = cfg.fsdp_config.get(
+            "init_model_with_meta_device", False
+        )
+        if init_model_with_meta_device and cfg.fsdp_config.strategy != "fsdp2":
+            raise ValueError(
+                "init_model_with_meta_device currently requires strategy=fsdp2."
+            )
+        if init_model_with_meta_device and (use_gptq or load_in_8bit):
+            raise ValueError(
+                "init_model_with_meta_device does not support quantized model loading."
+            )
 
         use_triton = cfg.get("use_triton", True)
 
@@ -180,15 +191,17 @@ class FSDPModelManager:
             else:
                 auto_model_class = AutoModelForCausalLM
 
-            # model = auto_model_class.from_pretrained(
-            #     cfg.model.model_path,
-            #     torch_dtype=self.torch_dtype,
-            #     config=model_config,
-            #     trust_remote_code=True,
-            # )
-            with torch.device("meta"):
-                model = auto_model_class.from_config(
-                    model_config,
+            if init_model_with_meta_device:
+                with torch.device("meta"):
+                    model = auto_model_class.from_config(
+                        model_config,
+                        trust_remote_code=True,
+                    )
+            else:
+                model = auto_model_class.from_pretrained(
+                    cfg.model.model_path,
+                    torch_dtype=self.torch_dtype,
+                    config=model_config,
                     trust_remote_code=True,
                 )
 
@@ -297,15 +310,15 @@ class FSDPModelManager:
             model=module, device_mesh=self._device_mesh
         )
 
-        self._strategy.load_hf_checkpoint_to_fsdp2_model(
-            model=self.model,
-            model_path=self._cfg.model.model_path,
-            device_mesh=self._device_mesh,
-            dtype=self.torch_dtype,
-        )
-        
-        self._strategy.debug_fsdp2_param_memory(self.model, self.torch_dtype)
-        
+        if self._cfg.fsdp_config.get("init_model_with_meta_device", False):
+            self._strategy.load_hf_checkpoint_to_fsdp2_model(
+                model=self.model,
+                model_path=self._cfg.model.model_path,
+                device_mesh=self._device_mesh,
+                dtype=self.torch_dtype,
+            )
+            self._strategy.debug_fsdp2_param_memory(self.model, self.torch_dtype)
+
         self.optimizer = self.build_optimizer(
             model=self.model, enable_critic_warmup=self.critic_warmup_steps > 0
         )

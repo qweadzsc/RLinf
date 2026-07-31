@@ -31,6 +31,7 @@ from sglang.srt.managers.scheduler import (
 )
 
 from rlinf.scheduler import Worker, WorkerAddress
+from rlinf.scheduler.hardware.accelerators import AcceleratorType, AcceleratorUtil
 from rlinf.utils.placement import (
     ModelParallelComponentPlacement,
     RolloutSyncMode,
@@ -38,7 +39,6 @@ from rlinf.utils.placement import (
 from rlinf.workers.rollout.utils import (
     RankMapper,
 )
-from rlinf.scheduler.hardware.accelerators import AcceleratorUtil
 
 from .io_struct import (
     AbortGenerationInput,
@@ -103,12 +103,12 @@ class Scheduler(_Scheduler):
             free_gpu_memory /= 2**30
             total_gpu_memory /= 2**30
 
-        memory_allocated = _platform_call(
-            platform, "memory_allocated", current_device, 0.0
-        ) / 2**30
-        memory_reserved = _platform_call(
-            platform, "memory_reserved", current_device, 0.0
-        ) / 2**30
+        memory_allocated = (
+            _platform_call(platform, "memory_allocated", current_device, 0.0) / 2**30
+        )
+        memory_reserved = (
+            _platform_call(platform, "memory_reserved", current_device, 0.0) / 2**30
+        )
 
         self._rlinf_worker.log_info(
             f"[dp {self._rlinf_worker.get_parent_rank()}-tp {self.tp_rank}] {text} "
@@ -130,13 +130,24 @@ class Scheduler(_Scheduler):
             model.load_state_dict(self.cpu_state_dict)
 
         return result
-    
-    def _execute_with_device_injection(self, func, args, device_param_names=None, device_arg_positions=None, inject_as_object=True):
+
+    def _execute_with_device_injection(
+        self,
+        func,
+        args,
+        device_param_names=None,
+        device_arg_positions=None,
+        inject_as_object=True,
+    ):
         import inspect
 
         accel_type = AcceleratorUtil.get_accelerator_type()
-        device_type = AcceleratorUtil.get_device_type(accel_type)  # "cuda", "npu", "cpu"
-        platform = AcceleratorUtil.get_torch_platform(accel_type)  # torch.cuda, torch.npu
+        device_type = AcceleratorUtil.get_device_type(
+            accel_type
+        )  # "cuda", "npu", "cpu"
+        platform = AcceleratorUtil.get_torch_platform(
+            accel_type
+        )  # torch.cuda, torch.npu
 
         device_id = _platform_call(platform, "current_device")
         if device_type == "cpu":
@@ -191,13 +202,18 @@ class Scheduler(_Scheduler):
         if rollout_sync_mode_collocated:
             for name, handle in state_dict.items():
                 func, args = handle
-                new_weight = self._execute_with_device_injection(
-                    func=func,
-                    args=args,
-                    # device_param_names=['storage_device', 'map_location', 'device'],
-                    device_arg_positions=[6], 
-                    inject_as_object=False
-                )
+                if AcceleratorUtil.get_accelerator_type() == AcceleratorType.NPU:
+                    new_weight = self._execute_with_device_injection(
+                        func=func,
+                        args=args,
+                        device_arg_positions=[6],
+                        inject_as_object=False,
+                    )
+                else:
+                    # Keep the original CUDA path unchanged.
+                    list_args = list(args)
+                    list_args[6] = torch.cuda.current_device()
+                    new_weight = func(*list_args)
                 batch_weight.append((name, new_weight))
         else:
             # disaggregate mode, recv tensor directly
