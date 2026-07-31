@@ -41,7 +41,6 @@ from typing import Optional
 
 import numpy as np
 import torch
-import torch_npu
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -49,7 +48,6 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import QuantizationSearchParams, SearchParams
 from qdrant_encoder import Encoder
 from tqdm import tqdm
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -69,7 +67,9 @@ def resolve_npu_devices(
         devices = list(range(torch.npu.device_count()))
 
     if num_encoder_workers is not None:
-        devices = [devices[index % len(devices)] for index in range(num_encoder_workers)]
+        devices = [
+            devices[index % len(devices)] for index in range(num_encoder_workers)
+        ]
 
     return devices
 
@@ -141,7 +141,9 @@ class AsyncEncoderPool:
             ", ".join(f"npu:{device}" for device in devices),
         )
 
-    async def encode(self, query_list: list[str] | str, is_query: bool = True) -> np.ndarray:
+    async def encode(
+        self, query_list: list[str] | str, is_query: bool = True
+    ) -> np.ndarray:
         if isinstance(query_list, str):
             query_list = [query_list]
         else:
@@ -247,7 +249,9 @@ class AsyncDenseRetriever(AsyncBaseRetriever):
                     raise TimeoutError(f"wait longer than {optimize_timeout}s, exit")
                 await asyncio.sleep(5)
                 wait_collection_time += 5
-                coll_status = (await self.client.get_collection(self.collection_name)).status
+                coll_status = (
+                    await self.client.get_collection(self.collection_name)
+                ).status
                 LOGGER.info(
                     "wait %ss for qdrant optimize, status=%s",
                     wait_collection_time,
@@ -261,7 +265,10 @@ class AsyncDenseRetriever(AsyncBaseRetriever):
             devices_arg=config.devices,
             num_encoder_workers=config.num_encoder_workers,
         )
-        LOGGER.info("Using encoder devices: %s", ", ".join(f"npu:{device}" for device in devices))
+        LOGGER.info(
+            "Using encoder devices: %s",
+            ", ".join(f"npu:{device}" for device in devices),
+        )
         self.encoder = AsyncEncoderPool(
             model_name=self.retrieval_method,
             model_path=config.retrieval_model_path,
@@ -272,7 +279,9 @@ class AsyncDenseRetriever(AsyncBaseRetriever):
         )
 
         self.topk = config.retrieval_topk
-        search_kwargs = _json_loads_dict(config.qdrant_search_param, "qdrant_search_param")
+        search_kwargs = _json_loads_dict(
+            config.qdrant_search_param, "qdrant_search_param"
+        )
         quant_kwargs = _json_loads_dict(
             config.qdrant_search_quant_param, "qdrant_search_quant_param"
         )
@@ -502,7 +511,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--qdrant_search_param",
         type=str,
         default="{}",
-        help='HNSW search parameters as JSON string, e.g. \'{"hnsw_ef":256}\'.',
+        help="HNSW search parameters as JSON string, e.g. '{\"hnsw_ef\":256}'.",
     )
     parser.add_argument(
         "--qdrant_search_quant_param",
@@ -637,7 +646,10 @@ async def main_async(args: argparse.Namespace) -> None:
     if not args.pages_path:
         LOGGER.info("Page Access is off.")
     elif not os.path.exists(args.pages_path):
-        LOGGER.info("Page Access is not loaded because pages_path(%s) does not exist.", args.pages_path)
+        LOGGER.info(
+            "Page Access is not loaded because pages_path(%s) does not exist.",
+            args.pages_path,
+        )
     else:
         page_access = PageAccess(args.pages_path)
         LOGGER.info("Page Access is ready.")

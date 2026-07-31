@@ -13,14 +13,15 @@
 # limitations under the License.
 
 import os
-import time
 import subprocess
+import time
 from contextlib import contextmanager
 from functools import partial
 from typing import Optional
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from torch.distributed.tensor import DTensor
@@ -192,6 +193,7 @@ def _get_device_type():
     if hasattr(torch, "npu"):
         try:
             import torch_npu  # noqa: F401
+
             if torch.npu.is_available():
                 return "npu"
         except Exception:
@@ -314,8 +316,10 @@ def _find_transformer_layers(model):
         if (
             "decoderlayer" in cls
             or "transformerlayer" in cls
-            or "qwen" in cls and "layer" in cls
-            or "llama" in cls and "layer" in cls
+            or "qwen" in cls
+            and "layer" in cls
+            or "llama" in cls
+            and "layer" in cls
         ):
             rows.append((name, mod))
 
@@ -373,11 +377,13 @@ def install_backward_memory_hooks(
     def make_bwd_pre(name):
         def hook(module, grad_output):
             _mem_report(f"BWD_PRE  {name}", rank=rank, log_all_ranks=log_all_ranks)
+
         return hook
 
     def make_bwd_post(name):
         def hook(module, grad_input, grad_output):
             _mem_report(f"BWD_POST {name}", rank=rank, log_all_ranks=log_all_ranks)
+
         return hook
 
     def make_param_grad_hook(name):
@@ -389,6 +395,7 @@ def install_backward_memory_hooks(
                 log_all_ranks=log_all_ranks,
             )
             return grad
+
         return hook
 
     if isinstance(layers, torch.nn.ModuleList):
@@ -404,13 +411,17 @@ def install_backward_memory_hooks(
             handles.append(layer.register_full_backward_pre_hook(make_bwd_pre(name)))
         except Exception as e:
             if rank == 0 or log_all_ranks:
-                print(f"[BWD_HOOK][rank={rank}] failed pre hook {name}: {e}", flush=True)
+                print(
+                    f"[BWD_HOOK][rank={rank}] failed pre hook {name}: {e}", flush=True
+                )
 
         try:
             handles.append(layer.register_full_backward_hook(make_bwd_post(name)))
         except Exception as e:
             if rank == 0 or log_all_ranks:
-                print(f"[BWD_HOOK][rank={rank}] failed post hook {name}: {e}", flush=True)
+                print(
+                    f"[BWD_HOOK][rank={rank}] failed post hook {name}: {e}", flush=True
+                )
 
         if include_param_grad_hooks:
             n = 0
@@ -637,7 +648,7 @@ class FSDPActor(FSDPModelManager, Worker):
                     v = v.to(rollout_dtype)
                 if not self.is_pipeline:
                     # TODO: nv support
-                    v = v.detach().to('cpu')
+                    v = v.detach().to("cpu")
                     v = reduce_tensor(v)
                 buffer[k] = v
             if bucket_idx == 0:
@@ -1049,7 +1060,7 @@ class FSDPActor(FSDPModelManager, Worker):
         assert total_result_len == total_result_len_per_dp, (
             f"Expected {total_result_len_per_dp} sequences from channel, but got {total_result_len}"
         )
-        
+
     def _print_optimizer_state_summary(self, tag):
         if not self._should_print_mem():
             return
@@ -1062,15 +1073,18 @@ class FSDPActor(FSDPModelManager, Worker):
         try:
             states = self.optimizer.state
         except Exception as e:
-            print(f"[OPT_STATE][rank={rank}][{tag}] cannot access optimizer.state: {e}", flush=True)
+            print(
+                f"[OPT_STATE][rank={rank}][{tag}] cannot access optimizer.state: {e}",
+                flush=True,
+            )
             return
 
         n_state_tensors = 0
 
-        for _, state in states.items():
+        for state in states.values():
             if not isinstance(state, dict):
                 continue
-            for k, v in state.items():
+            for v in state.values():
                 if torch.is_tensor(v):
                     n_state_tensors += 1
                     numel = v.numel()
@@ -1089,7 +1103,7 @@ class FSDPActor(FSDPModelManager, Worker):
             f"dtype_numel={dtype_count}",
             flush=True,
         )
-        
+
     def _print_batch_summary(self, batch, tag):
         if not self._should_print_mem():
             return
@@ -1368,13 +1382,13 @@ class FSDPActor(FSDPModelManager, Worker):
 
             # with backward_ctx:
             #     self.grad_scaler.scale(loss).backward()
-                
+
             rank = int(os.environ.get("RANK", "0"))
 
             bwd_hook_handles = install_backward_memory_hooks(
                 self.model,
-                hook_every=1,                 # Use 1 for precise localization.
-                log_all_ranks=False,          # Start with rank 0 only; set True if the OOM rank is uncertain.
+                hook_every=1,  # Use 1 for precise localization.
+                log_all_ranks=False,  # Start with rank 0 only; set True if the OOM rank is uncertain.
                 reset_peak_before_backward=True,
                 include_param_grad_hooks=False,
             )
@@ -1387,6 +1401,7 @@ class FSDPActor(FSDPModelManager, Worker):
                 )
 
                 from contextlib import nullcontext
+
                 with nullcontext():
                     self.grad_scaler.scale(loss).backward()
 
@@ -1475,8 +1490,9 @@ class FSDPActor(FSDPModelManager, Worker):
         if rollout_train_kl is not None:
             mean_metric_dict["actor/rollout_train_kl"] = rollout_train_kl
 
-
-        self._print_mem("training_step: after local aggregate metrics before all_reduce")
+        self._print_mem(
+            "training_step: after local aggregate metrics before all_reduce"
+        )
 
         mean_metric_dict = all_reduce_dict(
             mean_metric_dict, op=torch.distributed.ReduceOp.AVG
@@ -1551,7 +1567,7 @@ class FSDPActor(FSDPModelManager, Worker):
             partitioning_tool=get_seqlen_balanced_partitions,
         )
         return batch
-    
+
     def _debug_mem_rank(self):
         """
         Retrieve the global rank when possible. Prefer torch.distributed, then environment variables,
@@ -1661,7 +1677,9 @@ class FSDPActor(FSDPModelManager, Worker):
 
         allocated = self._safe_torch_mem_call(backend, "memory_allocated", device)
         reserved = self._safe_torch_mem_call(backend, "memory_reserved", device)
-        max_allocated = self._safe_torch_mem_call(backend, "max_memory_allocated", device)
+        max_allocated = self._safe_torch_mem_call(
+            backend, "max_memory_allocated", device
+        )
         max_reserved = self._safe_torch_mem_call(backend, "max_memory_reserved", device)
 
         free_mem = None

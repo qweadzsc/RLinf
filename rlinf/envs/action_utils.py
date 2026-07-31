@@ -55,7 +55,9 @@ def prepare_actions_for_maniskill(
     actions["terminate_episode"] = np.array([0.0] * batch_size).reshape(-1, 1)  # [B, 1]
 
     actions = {k: torch.tensor(v, dtype=torch.float32) for k, v in actions.items()}
-    target_device = AcceleratorUtil.get_device_type(AcceleratorUtil.get_accelerator_type())
+    target_device = AcceleratorUtil.get_device_type(
+        AcceleratorUtil.get_accelerator_type()
+    )
     actions = torch.cat(
         [actions["world_vector"], actions["rot_axangle"], actions["gripper"]], dim=1
     ).to(target_device)

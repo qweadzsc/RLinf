@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import asyncio
-import os
 import copy
 import dataclasses
 from typing import Any, Literal, Optional
@@ -37,6 +36,7 @@ from rlinf.scheduler.dynamic_scheduler.manager import RolloutScalingScheduler
 from rlinf.scheduler.dynamic_scheduler.utils import (
     get_scheduler_channel,
 )
+from rlinf.scheduler.hardware.accelerators import AcceleratorType, AcceleratorUtil
 from rlinf.utils.placement import ModelParallelComponentPlacement
 from rlinf.workers.rollout.sglang import Engine, io_struct
 from rlinf.workers.rollout.utils import (
@@ -45,7 +45,6 @@ from rlinf.workers.rollout.utils import (
     RunningStatusManager,
     print_sglang_outputs,
 )
-from rlinf.scheduler.hardware.accelerators import AcceleratorUtil, AcceleratorType
 
 
 class SGLangWorker(Worker):

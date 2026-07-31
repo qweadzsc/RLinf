@@ -12,20 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import json
 import gc
+import json
+import os
 from contextlib import nullcontext
 from typing import ContextManager, Union
 
 import torch
-import torch.nn as nn
 import torch.distributed as dist
-from torch.distributed.tensor import DTensor, distribute_tensor
-from torch.distributed.device_mesh import DeviceMesh
-from torch.optim import Optimizer
-
+import torch.nn as nn
 from safetensors.torch import load_file
+from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.tensor import DTensor
+from torch.optim import Optimizer
 
 from rlinf.config import torch_dtype_from_precision
 from rlinf.hybrid_engines.fsdp import (
@@ -208,7 +207,7 @@ class FSDP2Strategy(FSDPStrategyBase):
         else:
             model.set_requires_gradient_sync(False)
         return nullcontext()
-    
+
     def load_hf_checkpoint_to_fsdp2_model(
         self,
         model,
@@ -285,11 +284,15 @@ class FSDP2Strategy(FSDPStrategyBase):
                         # Some versions store it as _dim.
                         shard_dim = getattr(placement, "_dim", None)
                     if shard_dim is None:
-                        raise RuntimeError(f"Cannot get shard dim from placement: {placement}")
+                        raise RuntimeError(
+                            f"Cannot get shard dim from placement: {placement}"
+                        )
                     return mesh_dim, shard_dim, placement
             return None, None, None
 
-        def _compute_unpadded_local_shape(full_shape, shard_dim: int, mesh_size: int, shard_idx: int):
+        def _compute_unpadded_local_shape(
+            full_shape, shard_dim: int, mesh_size: int, shard_idx: int
+        ):
             """
             torch.tensor_split-style uneven split shape.
             """
@@ -302,7 +305,9 @@ class FSDP2Strategy(FSDPStrategyBase):
             local_shape[shard_dim] = local_dim
             return tuple(local_shape)
 
-        def _slice_cpu_shard(full_cpu_tensor, shard_dim: int, mesh_size: int, shard_idx: int):
+        def _slice_cpu_shard(
+            full_cpu_tensor, shard_dim: int, mesh_size: int, shard_idx: int
+        ):
             """
             Slice CPU tensor into the shard for shard_idx using torch.tensor_split semantics.
             """
@@ -368,7 +373,7 @@ class FSDP2Strategy(FSDPStrategyBase):
                     f"[{tag}] Still have meta tensors after checkpoint loading. "
                     f"Examples: {bad}"
                 )
-                
+
         def _materialize_remaining_meta_buffers(model, device):
             """
             Materialize meta buffers that are not saved in HF checkpoint.
@@ -408,11 +413,15 @@ class FSDP2Strategy(FSDPStrategyBase):
                     head_dim = getattr(config, "head_dim", None)
                     if head_dim is None:
                         hidden_size = getattr(config, "hidden_size", None)
-                        num_attention_heads = getattr(config, "num_attention_heads", None)
+                        num_attention_heads = getattr(
+                            config, "num_attention_heads", None
+                        )
                         if hidden_size is not None and num_attention_heads is not None:
                             head_dim = hidden_size // num_attention_heads
 
-                    partial_rotary_factor = getattr(config, "partial_rotary_factor", 1.0)
+                    partial_rotary_factor = getattr(
+                        config, "partial_rotary_factor", 1.0
+                    )
 
                     if head_dim is not None:
                         dim = int(head_dim * partial_rotary_factor)
@@ -440,7 +449,9 @@ class FSDP2Strategy(FSDPStrategyBase):
                     if not getattr(buffer, "is_meta", False):
                         continue
 
-                    full_name = f"{module_name}.{buffer_name}" if module_name else buffer_name
+                    full_name = (
+                        f"{module_name}.{buffer_name}" if module_name else buffer_name
+                    )
 
                     # Case 1: recent transformers rotary embedding may expose rope_init_fn.
                     if buffer_name == "inv_freq" and "rotary" in module_name.lower():
@@ -453,7 +464,9 @@ class FSDP2Strategy(FSDPStrategyBase):
                                     module_config,
                                     device=device,
                                 )
-                                inv_freq = inv_freq.to(device=device, dtype=torch.float32)
+                                inv_freq = inv_freq.to(
+                                    device=device, dtype=torch.float32
+                                )
 
                                 # Some implementations also keep attention_scaling as an attr.
                                 if hasattr(module, "attention_scaling"):
@@ -484,7 +497,11 @@ class FSDP2Strategy(FSDPStrategyBase):
                         "Please add a materialization rule for this buffer."
                     )
 
-            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+            rank = (
+                torch.distributed.get_rank()
+                if torch.distributed.is_initialized()
+                else 0
+            )
             if rank == 0 and materialized:
                 print(
                     f"[FSDP2 load] materialized non-checkpoint meta buffers: {materialized}",
@@ -581,7 +598,9 @@ class FSDP2Strategy(FSDPStrategyBase):
                                     mesh_size=mesh_size,
                                     shard_idx=dst_idx,
                                 )
-                                scatter_list.append(cpu_piece.to(device=device, non_blocking=False))
+                                scatter_list.append(
+                                    cpu_piece.to(device=device, non_blocking=False)
+                                )
 
                             del full_cpu_tensor
                         else:
@@ -608,11 +627,15 @@ class FSDP2Strategy(FSDPStrategyBase):
                         # Replicated DTensor. Usually buffers/small tensors.
                         if rank == 0:
                             assert shard is not None
-                            full_tensor = shard[name].to(
-                                dtype=dtype,
-                                device=device,
-                                non_blocking=False,
-                            ).contiguous()
+                            full_tensor = (
+                                shard[name]
+                                .to(
+                                    dtype=dtype,
+                                    device=device,
+                                    non_blocking=False,
+                                )
+                                .contiguous()
+                            )
                         else:
                             full_tensor = torch.empty(
                                 full_shape,
@@ -635,11 +658,15 @@ class FSDP2Strategy(FSDPStrategyBase):
                     # Usually small buffers. Broadcast full value.
                     if rank == 0:
                         assert shard is not None
-                        full_tensor = shard[name].to(
-                            dtype=dtype,
-                            device=device,
-                            non_blocking=False,
-                        ).contiguous()
+                        full_tensor = (
+                            shard[name]
+                            .to(
+                                dtype=dtype,
+                                device=device,
+                                non_blocking=False,
+                            )
+                            .contiguous()
+                        )
                     else:
                         full_tensor = torch.empty(
                             full_shape,
@@ -682,7 +709,7 @@ class FSDP2Strategy(FSDPStrategyBase):
                 f"FSDP2 checkpoint loading failed: "
                 f"missing={len(missing)}, unexpected={len(unexpected)}"
             )
-            
+
         _materialize_remaining_meta_buffers(model, device)
 
         del load_state
@@ -697,7 +724,7 @@ class FSDP2Strategy(FSDPStrategyBase):
                 "[FSDP2 load] checkpoint loaded successfully; no meta tensors remain.",
                 flush=True,
             )
-            
+
     @staticmethod
     def debug_fsdp2_param_memory(model, dtype):
         rank = dist.get_rank()

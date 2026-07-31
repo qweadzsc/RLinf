@@ -576,9 +576,7 @@ def get_iterator_dynamic(
             # used to support pp
             num_micro_batches = max(min_num_micro_batch, num_micro_batches)
         if same_micro_num_in_dp:
-            num_micro_batches = torch.tensor(
-                [num_micro_batches], device=runtime_device
-            )
+            num_micro_batches = torch.tensor([num_micro_batches], device=runtime_device)
             dist.all_reduce(num_micro_batches, op=dist.ReduceOp.MAX, group=dp_group)
             num_micro_batches = num_micro_batches.cpu().item()
         if num_batches_divided_by is not None:
@@ -650,9 +648,7 @@ def get_iterator_dynamic(
             # used to support pp
             num_micro_batches = max(min_num_micro_batch, num_micro_batches)
         if same_micro_num_in_dp:
-            num_micro_batches = torch.tensor(
-                [num_micro_batches], device=runtime_device
-            )
+            num_micro_batches = torch.tensor([num_micro_batches], device=runtime_device)
             dist.all_reduce(num_micro_batches, op=dist.ReduceOp.MAX, group=dp_group)
             num_micro_batches = num_micro_batches.cpu().item()
         if num_batches_divided_by is not None:
