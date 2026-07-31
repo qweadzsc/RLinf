@@ -100,7 +100,7 @@ data:
   num_workers: 2
   prompt_key: prompt
   answer_key: solutions
-  apply_chat_template: False
+  apply_chat_template: True
   shuffle: True
   validation_shuffle: True
   seed: 1234
@@ -110,7 +110,8 @@ data:
 
 agentloop:
   group_name: "AgentLoopGroup"
-  toolcall_parser: "searchr1-qwen"
+  toolcall_parser: "searchr1-deepseek-r1"
+  use_native_tool_messages: True
   max_turns: 2
   max_tool_response_length: 500
   tool_response_truncate_side: "right"
