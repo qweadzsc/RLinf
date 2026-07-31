@@ -10,11 +10,14 @@ set -eo pipefail
 VENV_DIR="${VENV_DIR:-.venv}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11.14}"
 SGLANG_VERSION="${SGLANG_VERSION:-0.5.2}"
-SGLANG_DIR="${SGLANG_DIR:-$PWD/sglang}"
-SGL_KERNEL_NPU_DIR="${SGL_KERNEL_NPU_DIR:-$PWD/sgl-kernel-npu}"
+SGLANG_DIR="${SGLANG_DIR:-${VENV_DIR}/src/sglang}"
+SGL_KERNEL_NPU_DIR="${SGL_KERNEL_NPU_DIR:-${VENV_DIR}/src/sgl-kernel-npu}"
 SGL_KERNEL_NPU_REF="${SGL_KERNEL_NPU_REF:-20251214}"
 TORCH_WHEEL_URL="${TORCH_WHEEL_URL:-https://download.pytorch.org/whl/cpu/torch-2.6.0%2Bcpu-cp311-cp311-manylinux_2_28_aarch64.whl}"
+# Override this URL with the torch_npu wheel matching the installed CANN version.
 TORCH_NPU_WHEEL_URL="${TORCH_NPU_WHEEL_URL:-https://gitcode.com/Ascend/pytorch/releases/download/v7.2.0-pytorch2.6.0/torch_npu-2.6.0.post3-cp311-cp311-manylinux_2_28_aarch64.whl}"
+WHEEL_DIR="${WHEEL_DIR:-${VENV_DIR}/wheels}"
+UV_CACHE_DIR="${UV_CACHE_DIR:-${VENV_DIR}/cache}"
 PYPI_INDEX_URL="${PYPI_INDEX_URL:-https://pypi.org/simple}"
 TEST_PYPI_INDEX_URL="${TEST_PYPI_INDEX_URL:-https://test.pypi.org/simple}"
 
@@ -27,6 +30,21 @@ install_uv() {
 
 python_major_minor() {
     python -c "import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")"
+}
+
+download_wheel() {
+    local wheel_url="$1"
+    local wheel_name="${wheel_url##*/}"
+    wheel_name="${wheel_name//%2B/+}"
+    local wheel_path="${WHEEL_DIR}/${wheel_name}"
+    local partial_path="${wheel_path}.part"
+
+    mkdir -p "${WHEEL_DIR}"
+    if [[ ! -f "${wheel_path}" ]]; then
+        wget --show-progress -O "${partial_path}" "${wheel_url}"
+        mv "${partial_path}" "${wheel_path}"
+    fi
+    printf '%s\n' "${wheel_path}"
 }
 
 create_or_reuse_venv() {
@@ -65,7 +83,9 @@ create_or_reuse_venv() {
 }
 
 command -v git >/dev/null || { echo "git is required." >&2; exit 1; }
+command -v wget >/dev/null || { echo "wget is required." >&2; exit 1; }
 create_or_reuse_venv
+export UV_CACHE_DIR
 
 uv pip install --upgrade pip
 uv pip install \
@@ -74,14 +94,17 @@ uv pip install \
     "omegaconf==2.4.0.dev4" "hydra-core==1.4.0.dev1" einops nvitop \
     "setuptools>=69.5.1,<75.9" ninja tensorboard "swanlab>=0.6.11"
 
-uv pip install "${TORCH_WHEEL_URL}" "${TORCH_NPU_WHEEL_URL}"
+TORCH_WHEEL_PATH="$(download_wheel "${TORCH_WHEEL_URL}")"
+TORCH_NPU_WHEEL_PATH="$(download_wheel "${TORCH_NPU_WHEEL_URL}")"
+uv pip install --no-deps "${TORCH_WHEEL_PATH}" "${TORCH_NPU_WHEEL_PATH}"
 uv pip install "torchvision==0.21.0" --index-url https://download.pytorch.org/whl/cpu
 uv pip install -i "${TEST_PYPI_INDEX_URL}" "triton-ascend<3.2.0rc"
 
 if [[ ! -d "${SGL_KERNEL_NPU_DIR}/.git" ]]; then
-    git clone --branch "${SGL_KERNEL_NPU_REF}" \
+    git clone --recursive --branch "${SGL_KERNEL_NPU_REF}" \
         https://github.com/sgl-project/sgl-kernel-npu.git "${SGL_KERNEL_NPU_DIR}"
 fi
+git -C "${SGL_KERNEL_NPU_DIR}" submodule update --init --recursive
 (
     cd "${SGL_KERNEL_NPU_DIR}"
     bash build.sh
