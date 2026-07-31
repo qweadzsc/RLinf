@@ -46,6 +46,9 @@ class Searchr1AgentLoopWorker(MultiAgentLoopWorker):
         assert self.toolcall_parser is not None, (
             "toolcall_parser must be set in searchr1"
         )
+        self.use_native_tool_messages = cfg.agentloop.get(
+            "use_native_tool_messages", False
+        )
 
         # Inserting tool info requires re-encode token_ids, so the recompute_logprobs must be true.
         if self.cfg.runner.task_type != "reasoning_eval":
@@ -167,10 +170,21 @@ class Searchr1AgentLoopWorker(MultiAgentLoopWorker):
             message = {"role": "tool", "content": tool_response.text}
             tool_messages.append(message)
 
-        # Tokenize tool responses
-        tool_response_ids: list[int] = self.tokenizer.encode(
-            tool_messages[0]["content"], add_special_tokens=False
-        )
+        # DeepSeek-R1 encodes tool outputs with dedicated chat-template tokens.
+        # SearchR1's original Qwen protocol keeps its plain-text continuation.
+        if self.use_native_tool_messages:
+            tool_response_ids = self.tokenizer.apply_chat_template(
+                tool_messages, add_generation_prompt=True, tokenize=True
+            )
+            if tool_response_ids[0] != self.tokenizer.bos_token_id:
+                raise ValueError(
+                    "DeepSeek-R1 tool template must start with a BOS token"
+                )
+            tool_response_ids = tool_response_ids[1:]
+        else:
+            tool_response_ids = self.tokenizer.encode(
+                tool_messages[0]["content"], add_special_tokens=False
+            )
         max_tool_resp_len = self.max_resp_len - (
             len(turn_prompt_ids) + len(llm_response_ids) - len(problem_prompt_ids)
         )
