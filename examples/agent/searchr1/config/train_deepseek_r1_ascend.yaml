@@ -209,6 +209,7 @@ actor:
 
   fsdp_config:
     strategy: "fsdp2"
+    init_model_with_meta_device: True
     cpu_offload: False
     offload_pin_memory: True
     reshard_after_forward: True
