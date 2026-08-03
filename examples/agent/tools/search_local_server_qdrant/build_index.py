@@ -22,6 +22,11 @@ from typing import Any, Optional
 
 import datasets
 import torch
+
+try:
+    import torch_npu  # noqa: F401
+except ImportError:
+    pass
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     CollectionStatus,
@@ -37,6 +42,26 @@ global_encoder = None
 global_client = None
 
 
+def get_accelerator_device(device_type: str = "auto", index: int = 0) -> torch.device:
+    """Return an available CUDA or NPU device."""
+    if device_type not in {"auto", "cuda", "npu"}:
+        raise ValueError(f"Unsupported device type: {device_type}")
+
+    candidates = ("npu", "cuda") if device_type == "auto" else (device_type,)
+    for candidate in candidates:
+        backend = getattr(torch, candidate, None)
+        if backend is None or not backend.is_available():
+            continue
+        device_count = backend.device_count()
+        if device_count < 1:
+            continue
+        return torch.device(f"{candidate}:{index % device_count}")
+
+    raise RuntimeError(
+        f"No available accelerator found for device type {device_type!r}"
+    )
+
+
 def set_global(retrieval_method, config):
     from multiprocessing import current_process
 
@@ -49,7 +74,7 @@ def set_global(retrieval_method, config):
         pooling_method=config.retrieval_pooling_method,
         max_length=config.retrieval_query_max_length,
         use_fp16=config.retrieval_use_fp16,
-        device=torch.device(f"cuda:{process_idx % torch.cuda.device_count()}"),
+        device=get_accelerator_device(config.device_type, process_idx - 1),
     )
 
     global global_client
@@ -89,21 +114,8 @@ class QdrantIndexBuilder:
 
     def build(self):
         # Initialize encoder first (needed for building collection)
-        self.topk = config.retrieval_topk
-        self.batch_size = config.retrieval_batch_size
-
-        if self.config.debug:
-            # Check if collection exists, if not, build it from corpus
-            logging.info("[DEBUG] Debug mode enabled. Deleting existing collection...")
-            try:
-                self.client.delete_collection(collection_name=self.collection_name)
-                logging.info(
-                    f"[DEBUG] Collection '{self.collection_name}' deleted successfully."
-                )
-            except Exception as e:
-                logging.info(
-                    f"[DEBUG] Warning: Failed to delete collection '{self.collection_name}': {e}"
-                )
+        self.topk = self.config.retrieval_topk
+        self.batch_size = self.config.retrieval_batch_size
 
         collections = self.client.get_collections().collections
         collection_names = [col.name for col in collections]
@@ -115,7 +127,7 @@ class QdrantIndexBuilder:
         else:
             logging.info(f"Collection '{self.collection_name}' not found.")
         logging.info("Building collection from corpus...")
-        self._build_collection_from_corpus(config.corpus_text_field)
+        self._build_collection_from_corpus(self.config.corpus_text_field)
         logging.info(f"Collection '{self.collection_name}' built successfully!")
 
     @staticmethod
@@ -155,7 +167,7 @@ class QdrantIndexBuilder:
             pooling_method=self.config.retrieval_pooling_method,
             max_length=self.config.retrieval_query_max_length,
             use_fp16=self.config.retrieval_use_fp16,
-            device=torch.device("cuda:1"),
+            device=get_accelerator_device(self.config.device_type),
         )
         sample_emb = encoder.encode(sample_text, is_query=False)
         vector_size = sample_emb.shape[1]
@@ -292,7 +304,7 @@ class Config:
         retrieval_query_max_length: int = 256,
         retrieval_use_fp16: bool = False,
         retrieval_batch_size: int = 128,
-        debug: bool = False,
+        device_type: str = "auto",
     ):
         self.retrieval_method = retrieval_method
         self.retrieval_topk = retrieval_topk
@@ -309,7 +321,7 @@ class Config:
         self.retrieval_query_max_length = retrieval_query_max_length
         self.retrieval_use_fp16 = retrieval_use_fp16
         self.retrieval_batch_size = retrieval_batch_size
-        self.debug = debug
+        self.device_type = device_type
 
 
 if __name__ == "__main__":
@@ -357,10 +369,10 @@ if __name__ == "__main__":
         "--build_parallel", type=int, default=8, help="Qdrant build thread"
     )
     parser.add_argument(
-        "--debug",
-        type=bool,
-        default=False,
-        help="Enable debug mode to delete existing collection before building",
+        "--device_type",
+        choices=("auto", "cuda", "npu"),
+        default="auto",
+        help="Accelerator used by encoder workers.",
     )
     args = parser.parse_args()
     logging.getLogger().setLevel(logging.INFO)
@@ -379,7 +391,7 @@ if __name__ == "__main__":
         retrieval_query_max_length=256,
         retrieval_use_fp16=True,
         retrieval_batch_size=1024,
-        debug=args.debug,
+        device_type=args.device_type,
     )
 
     # 2) Instantiate a global retriever so it is loaded once and reused.

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import logging
-import traceback
 from datetime import timedelta
 from typing import Optional
 
@@ -918,11 +917,7 @@ class MultiChannelProcessGroup:
                     dist_backend_opts.group_id = group_name
                     dist_backend_opts.global_ranks_in_group = global_ranks_in_group
 
-                    try:
-                        backend_class = creator_fn(dist_backend_opts, pg_options)
-                    except BaseException:
-                        traceback.print_exc()
-                        raise
+                    backend_class = creator_fn(dist_backend_opts, pg_options)
 
             # Set sequence numbers for gloo and nccl backends.
             if backend_str == Backend.GLOO:

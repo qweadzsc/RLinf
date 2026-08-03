@@ -144,10 +144,8 @@ class SGLangWorker(Worker):
         return sampling_params
 
     def _init_engine(self):
-        use_cudagraph = not self._cfg_rollout.enforce_eager
-        # NOTE: disable npu graph for ascend
-        if AcceleratorUtil.get_accelerator_type() == AcceleratorType.NPU:
-            use_cudagraph = False
+        is_npu = AcceleratorUtil.get_accelerator_type() == AcceleratorType.NPU
+        use_cudagraph = not self._cfg_rollout.enforce_eager and not is_npu
 
         load_format = "dummy"  # dummy means randomize init weight
         if self.weight_reload == "sync":
@@ -178,7 +176,7 @@ class SGLangWorker(Worker):
                 else 1
             ),
             mem_fraction_static=self._cfg_rollout.gpu_memory_utilization,
-            enable_memory_saver=True,  # TODO: =use_cudagraph
+            enable_memory_saver=is_npu or use_cudagraph,
             enable_torch_compile=self._cfg_rollout.sglang.use_torch_compile,
             torch_compile_max_bs=min(
                 self._cfg_rollout.sglang.torch_compile_max_bs,

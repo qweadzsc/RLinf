@@ -329,7 +329,6 @@ class FSDPModelManager:
                 device_mesh=self._device_mesh,
                 dtype=self.torch_dtype,
             )
-            self._strategy.debug_fsdp2_param_memory(self.model, self.torch_dtype)
 
         self.optimizer = self.build_optimizer(
             model=self.model, enable_critic_warmup=self.critic_warmup_steps > 0
