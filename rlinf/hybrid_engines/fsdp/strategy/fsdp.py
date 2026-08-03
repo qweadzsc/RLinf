@@ -40,42 +40,6 @@ from rlinf.scheduler import Worker
 from rlinf.utils.utils import clear_memory
 
 
-def get_local_npu_device():
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.npu.set_device(local_rank)
-    return torch.device(f"npu:{local_rank}")
-
-
-def make_meta_init_fn(target_device: torch.device, root_model: nn.Module = None):
-    """
-    FSDP1 calls param_init_fn on meta modules before flattening and sharding.
-    This must materialize the current module's direct parameters and buffers on this rank's NPU.
-    """
-
-    def init_fn(module: nn.Module):
-        has_meta_param = any(p.is_meta for p in module.parameters(recurse=False))
-        has_meta_buffer = any(b.is_meta for b in module.buffers(recurse=False))
-
-        if not has_meta_param and not has_meta_buffer:
-            return
-
-        # Materialize only this module's direct tensors to avoid recursively materializing the entire model.
-        module.to_empty(device=target_device, recurse=False)
-
-        # A subsequent full Hugging Face checkpoint load overwrites parameter values,
-        # so reset_parameters is usually unnecessary here.
-        #
-        # If missing_keys later reveals a runtime buffer, enable the block below
-        # to initialize non-checkpoint buffers with Hugging Face defaults.
-        #
-        # if root_model is not None and hasattr(root_model, "_init_weights"):
-        #     root_model._init_weights(module)
-        # elif hasattr(module, "reset_parameters"):
-        #     module.reset_parameters()
-
-    return init_fn
-
-
 class FSDPStrategy(FSDPStrategyBase):
     _FSDP_CACHE_ATTRS = (
         "_mp_shard",
@@ -221,23 +185,6 @@ class FSDPStrategy(FSDPStrategyBase):
             use_orig_params=self.cfg.fsdp_config.use_orig_params,
             cpu_offload=cpu_offload,
         )
-
-        # fsdp_model = FSDP(
-        #     module=model,
-        #     param_init_fn=init_fn,
-        #     auto_wrap_policy=auto_wrap_policy,
-        #     # Important: explicitly pass torch.device rather than an int on NPU.
-        #     device_id=target_device,
-        #     sharding_strategy=sharding_strategy,
-        #     mixed_precision=mixed_precision,
-        #     # Important: set this to False when loading the checkpoint after wrapping.
-        #     sync_module_states=False,
-        #     device_mesh=device_mesh,
-        #     forward_prefetch=self.cfg.fsdp_config.forward_prefetch,
-        #     backward_prefetch=backward_prefetch,
-        #     limit_all_gathers=self.cfg.fsdp_config.limit_all_gathers,
-        #     use_orig_params=self.cfg.fsdp_config.use_orig_params,
-        # )
         return fsdp_model
 
     @classmethod

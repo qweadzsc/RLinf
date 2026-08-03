@@ -503,15 +503,12 @@ class FSDP2Strategy(FSDPStrategyBase):
                 else 0
             )
             if rank == 0 and materialized:
-                print(
-                    f"[FSDP2 load] materialized non-checkpoint meta buffers: {materialized}",
-                    flush=True,
+                self.logger.info(
+                    "[FSDP2 load] materialized non-checkpoint meta buffers: %s",
+                    materialized,
                 )
 
         target_state = model.state_dict()
-
-        if rank == 0:
-            print(f"[FSDP2 load] target_state keys: {len(target_state)}", flush=True)
 
         index_file = os.path.join(model_path, "model.safetensors.index.json")
 
@@ -532,9 +529,11 @@ class FSDP2Strategy(FSDPStrategyBase):
             shard_path = os.path.join(model_path, shard_file)
 
             if rank == 0:
-                print(
-                    f"[FSDP2 load] loading HF shard {shard_idx + 1}/{len(shard_files)}: {shard_file}",
-                    flush=True,
+                self.logger.info(
+                    "[FSDP2 load] loading HF shard %d/%d: %s",
+                    shard_idx + 1,
+                    len(shard_files),
+                    shard_file,
                 )
                 shard = load_file(shard_path, device="cpu")
             else:
@@ -550,9 +549,9 @@ class FSDP2Strategy(FSDPStrategyBase):
             for name in names_in_this_shard:
                 if name not in target_state:
                     if rank == 0:
-                        print(
-                            f"[FSDP2 load][warn] HF key not in target_state, skip: {name}",
-                            flush=True,
+                        self.logger.warning(
+                            "[FSDP2 load] HF key not in target state; skipping: %s",
+                            name,
                         )
                     continue
 
@@ -684,9 +683,6 @@ class FSDP2Strategy(FSDPStrategyBase):
             _empty_cache()
             dist.barrier()
 
-        if rank == 0:
-            print("[FSDP2 load] calling model.load_state_dict(assign=True)", flush=True)
-
         incompatible = model.load_state_dict(
             load_state,
             strict=True,
@@ -696,18 +692,10 @@ class FSDP2Strategy(FSDPStrategyBase):
         missing = incompatible.missing_keys
         unexpected = incompatible.unexpected_keys
 
-        if rank == 0:
-            print(f"[FSDP2 load] missing keys: {len(missing)}", flush=True)
-            print(f"[FSDP2 load] unexpected keys: {len(unexpected)}", flush=True)
-            if missing:
-                print(f"[FSDP2 load] first missing: {missing[:20]}", flush=True)
-            if unexpected:
-                print(f"[FSDP2 load] first unexpected: {unexpected[:20]}", flush=True)
-
         if missing or unexpected:
             raise RuntimeError(
                 f"FSDP2 checkpoint loading failed: "
-                f"missing={len(missing)}, unexpected={len(unexpected)}"
+                f"missing={missing[:20]}, unexpected={unexpected[:20]}"
             )
 
         _materialize_remaining_meta_buffers(model, device)
@@ -720,65 +708,6 @@ class FSDP2Strategy(FSDPStrategyBase):
         dist.barrier()
 
         if rank == 0:
-            print(
-                "[FSDP2 load] checkpoint loaded successfully; no meta tensors remain.",
-                flush=True,
+            self.logger.info(
+                "[FSDP2 load] checkpoint loaded successfully; no meta tensors remain."
             )
-
-    @staticmethod
-    def debug_fsdp2_param_memory(model, dtype):
-        rank = dist.get_rank()
-
-        local_numel = 0
-        logical_numel = 0
-
-        first_few = []
-
-        for name, p in model.named_parameters():
-            if isinstance(p, DTensor):
-                local = p.to_local()
-                local_numel += local.numel()
-                logical_numel += p.numel()
-
-                if len(first_few) < 10:
-                    first_few.append(
-                        (
-                            name,
-                            tuple(p.shape),
-                            tuple(local.shape),
-                            str(p.placements),
-                            str(local.device),
-                            str(local.dtype),
-                        )
-                    )
-            else:
-                local_numel += p.numel()
-                logical_numel += p.numel()
-
-                if len(first_few) < 10:
-                    first_few.append(
-                        (
-                            name,
-                            tuple(p.shape),
-                            tuple(p.shape),
-                            "NON_DTENSOR",
-                            str(p.device),
-                            str(p.dtype),
-                        )
-                    )
-
-        elem_size = torch.tensor([], dtype=dtype).element_size()
-
-        print(
-            f"[Rank {rank}] FSDP2 param check: "
-            f"local_numel={local_numel:,}, "
-            f"logical_numel={logical_numel:,}, "
-            f"local_param_bytes={local_numel * elem_size / 1024**3:.2f} GiB, "
-            f"logical_param_bytes={logical_numel * elem_size / 1024**3:.2f} GiB",
-            flush=True,
-        )
-
-        if rank == 0:
-            print("[Rank 0] first params:", flush=True)
-            for item in first_few:
-                print(item, flush=True)

@@ -16,12 +16,13 @@ qdrant_collection_name="${QDRANT_COLLECTION_NAME:-wiki_collection}"
 hnsw_config='{"m":32,"ef_construct":512}'
 
 CONFIG_PATH="$( realpath "$( dirname "${BASH_SOURCE[0]}" )"  )"
-ASCEND_LAUNCH_BLOCKING=1 \
-python3 ${CONFIG_PATH}/build_index_ascend.py \
-    --corpus_path "" \
-    --retriever_name "" \
-    --retriever_model "" \
-    --qdrant_collection_name "" \
-    --qdrant_url "" \
-    --hnsw_config "" \
+ASCEND_LAUNCH_BLOCKING="${ASCEND_LAUNCH_BLOCKING:-1}" \
+python3 "${CONFIG_PATH}/build_index.py" \
+    --device_type npu \
+    --corpus_path "${corpus_file}" \
+    --retriever_name "${retriever_name}" \
+    --retriever_model "${retriever_path}" \
+    --qdrant_collection_name "${qdrant_collection_name}" \
+    --qdrant_url "${qdrant_url}" \
+    --hnsw_config "${hnsw_config}" \
     --build_parallel "${BUILD_PARALLEL:-16}"

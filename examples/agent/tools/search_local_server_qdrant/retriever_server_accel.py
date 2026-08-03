@@ -572,11 +572,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable fp16 encoder inference. By default fp16 is enabled as in the original script.",
     )
-    parser.add_argument(
-        "--skip-startup-test",
-        action="store_true",
-        help="Skip the built-in smoke test queries at startup.",
-    )
     return parser
 
 
@@ -587,23 +582,6 @@ def _save_host_address(save_address_to: Optional[str], host_ip: str, port: int) 
     address_path = os.path.join(save_address_to, f"Host{host_ip}_IP{port}.txt")
     with open(address_path, "w", encoding="utf-8") as f:
         f.write(f"{host_ip}:{port}")
-
-
-async def _startup_smoke_test() -> None:
-    if retriever is None:
-        raise RuntimeError("Retriever is not initialized.")
-    query1 = "Tell me about Red Bull"
-    result1 = await retriever.asearch(query1, 1, return_score=False)
-    LOGGER.info("test1: query: %s, result: %s", query1, result1)
-
-    query2 = "Tell me about Ljubljana"
-    result2 = await retriever.asearch(query2, 2, return_score=True)
-    LOGGER.info("test2: query: %s, result: %s", query2, result2)
-
-    query3 = ["Tell me about Mars", "Tell me about Mercury"]
-    result3 = await retriever.abatch_search(query3, 3, return_score=True)
-    LOGGER.info("test3: query: %s, result: %s", query3, result3)
-    LOGGER.info("Retriever is ready.")
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -637,11 +615,6 @@ async def main_async(args: argparse.Namespace) -> None:
     )
 
     retriever = await get_retriever(runtime_config)
-
-    if not args.skip_startup_test:
-        await _startup_smoke_test()
-    else:
-        LOGGER.info("Startup smoke test skipped.")
 
     if not args.pages_path:
         LOGGER.info("Page Access is off.")
