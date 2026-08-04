@@ -26,7 +26,7 @@ runner:
   max_steps: -1
 
   val_check_interval: 25
-  save_interval: 25
+  save_interval: 200
 
   seq_length: 7096
 
@@ -159,7 +159,7 @@ rollout:
   max_running_requests: 128     # the maximum number of running requests in the rollout engine.
   cuda_graph_max_bs: 128        # the maximum batch size for cuda graph. If the batch size is larger than this, cuda graph will not be used.
 
-  validate_weight_first_sync: True # validate the weight norm between load model and first sync.
+  validate_weight_first_sync: False # Avoid loading a duplicate HF model only for first-sync validation.
   validate_weight: False        # whether to send all weights at first for weight comparison.
   validate_save_dir: null       # the directory to save the weights for comparison. If validate_weight is True, this will be used to save the weights for comparison.
   print_outputs: False          # whether to print the outputs (token ids, texts, etc.) of rollout engine.
@@ -209,6 +209,7 @@ actor:
 
   fsdp_config:
     strategy: "fsdp2"
+    save_full_model_weights: False
     init_model_with_meta_device: True
     cpu_offload: False
     offload_pin_memory: True

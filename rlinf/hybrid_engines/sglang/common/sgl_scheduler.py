@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import logging
-from contextlib import nullcontext
 from importlib.metadata import version
 from typing import Any, Callable, Literal
 
@@ -31,7 +30,6 @@ from sglang.srt.managers.scheduler import (
 )
 
 from rlinf.scheduler import Worker, WorkerAddress
-from rlinf.scheduler.hardware.accelerators import AcceleratorType, AcceleratorUtil
 from rlinf.utils.placement import (
     ModelParallelComponentPlacement,
     RolloutSyncMode,
@@ -135,65 +133,6 @@ class Scheduler(_Scheduler):
 
         return result
 
-    def _execute_with_device_injection(
-        self,
-        func,
-        args,
-        device_param_names=None,
-        device_arg_positions=None,
-        inject_as_object=True,
-    ):
-        import inspect
-
-        accel_type = AcceleratorUtil.get_accelerator_type()
-        device_type = AcceleratorUtil.get_device_type(
-            accel_type
-        )  # "cuda", "npu", "cpu"
-        platform = AcceleratorUtil.get_torch_platform(
-            accel_type
-        )  # torch.cuda, torch.npu
-
-        device_id = _platform_call(platform, "current_device")
-        if device_type == "cpu":
-            target_device = torch.device("cpu")
-        else:
-            target_device = torch.device(f"{device_type}:{device_id}")
-
-        inject_value = target_device if inject_as_object else device_id
-
-        if device_param_names:
-            try:
-                sig = inspect.signature(func)
-                param_names = list(sig.parameters.keys())
-                kwargs = {}
-                args_list = list(args)
-                for i, param_name in enumerate(param_names):
-                    if i < len(args_list):
-                        kwargs[param_name] = args_list[i]
-                    else:
-                        break
-                device_context = (
-                    platform.device(inject_value)
-                    if hasattr(platform, "device") and device_type != "cpu"
-                    else nullcontext()
-                )
-                with device_context:
-                    new_weight = func(**kwargs)
-                # if hasattr(new_weight, 'device') and new_weight.device != inject_value:
-                #     new_weight = new_weight.to(target_device)
-                return new_weight
-            except (ValueError, TypeError, AttributeError):
-                pass
-
-        if device_arg_positions:
-            args_list = list(args)
-            for pos in device_arg_positions:
-                if 0 <= pos < len(args_list):
-                    args_list[pos] = inject_value
-            return func(*args_list).to(target_device)
-
-        return func(*args)
-
     def batch_load_hf_weight(self, state_dict: dict[str, Any]) -> Any:
         assert self.weight_reload == "sync", (
             "only sglang with 'sync' can run 'batch_load_hf_weight'"
@@ -207,12 +146,12 @@ class Scheduler(_Scheduler):
         if rollout_sync_mode_collocated:
             for name, handle in state_dict.items():
                 func, args = handle
-                if AcceleratorUtil.get_accelerator_type() == AcceleratorType.NPU:
-                    new_weight = self._execute_with_device_injection(
-                        func=func,
-                        args=args,
-                        device_arg_positions=[6],
-                        inject_as_object=False,
+                if Worker.torch_device_type == "npu":
+                    new_weight = func(*args).to(
+                        torch.device(
+                            Worker.torch_device_type,
+                            Worker.torch_platform.current_device(),
+                        )
                     )
                 else:
                     # Keep the original CUDA path unchanged.
@@ -355,12 +294,6 @@ class Scheduler(_Scheduler):
             validate_weight_first_sync = self.cfg.rollout.get(
                 "validate_weight_first_sync", False
             )
-            if self.cfg.actor.training_backend == "fsdp":
-                # FSDP rollout sync rebuilds tensors from actor-provided payloads rather
-                # than comparing two identical HF initialization paths. The first-sync
-                # norm check is therefore prone to false positives and is only reliable
-                # for the Megatron path.
-                validate_weight_first_sync = False
             if self.cfg.runner.resume_dir is not None:
                 # validate_weight_first_sync compare hf weights with megatron weights,
                 # and if resume_dir is enabled, hf weights can't equal to megatron's.
