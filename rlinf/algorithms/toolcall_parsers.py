@@ -28,7 +28,7 @@ from rlinf.data.tool_call.tool_io_struct import (
 )
 
 
-@register_toolresp_encoder("searchr1-qwen")
+@register_toolresp_encoder("qwen")
 def encode_searchr1_qwen_tool_response(tokenizer, tool_messages: list[dict[str, str]]):
     """Encode the textual tool response used by the SearchR1 Qwen recipe."""
     if not tool_messages:
@@ -88,7 +88,7 @@ class Qwen25ToolCallParser:
         return content, function_calls
 
 
-@register_toolcall_parser("searchr1-qwen")
+@register_toolcall_parser("qwen")
 class Searchr1QwenToolCallParser:
     def __init__(self) -> None:
         self.tool_call_start_token: str = "<search>"
