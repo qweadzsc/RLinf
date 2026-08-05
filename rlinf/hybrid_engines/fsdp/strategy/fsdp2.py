@@ -394,6 +394,15 @@ class FSDP2Strategy(FSDPStrategyBase):
 
             root_config = _get_root_config(model)
 
+            def _uses_default_rope(config):
+                rope_scaling = getattr(config, "rope_scaling", None)
+                if not rope_scaling:
+                    return True
+                rope_type = rope_scaling.get(
+                    "rope_type", rope_scaling.get("type", "default")
+                )
+                return rope_type == "default"
+
             def _build_rope_inv_freq(module, config):
                 """
                 Build standard RoPE inv_freq.
@@ -454,13 +463,14 @@ class FSDP2Strategy(FSDPStrategyBase):
                         f"{module_name}.{buffer_name}" if module_name else buffer_name
                     )
 
-                    # Case 1: recent transformers rotary embedding may expose rope_init_fn.
+                    # Prefer the model-specific Transformers initializer so scaled
+                    # RoPE variants use the same formula as normal HF loading.
                     if buffer_name == "inv_freq" and "rotary" in module_name.lower():
-                        try:
-                            rope_init_fn = getattr(module, "rope_init_fn", None)
-                            module_config = getattr(module, "config", root_config)
+                        rope_init_fn = getattr(module, "rope_init_fn", None)
+                        module_config = getattr(module, "config", root_config)
 
-                            if rope_init_fn is not None and module_config is not None:
+                        if rope_init_fn is not None and module_config is not None:
+                            try:
                                 inv_freq, attention_scaling = rope_init_fn(
                                     module_config,
                                     device=device,
@@ -472,12 +482,19 @@ class FSDP2Strategy(FSDPStrategyBase):
                                 # Some implementations also keep attention_scaling as an attr.
                                 if hasattr(module, "attention_scaling"):
                                     module.attention_scaling = attention_scaling
-                            else:
-                                inv_freq = _build_rope_inv_freq(module, root_config)
-
-                        except Exception:
-                            # Fallback to standard RoPE formula.
+                            except Exception as exc:
+                                raise RuntimeError(
+                                    "Failed to initialize the rotary embedding with the "
+                                    "Transformers RoPE initializer"
+                                ) from exc
+                        elif _uses_default_rope(module_config):
                             inv_freq = _build_rope_inv_freq(module, root_config)
+                        else:
+                            raise RuntimeError(
+                                "This model uses a scaled RoPE variant, but its rotary "
+                                "embedding does not expose a Transformers rope_init_fn. "
+                                "Refusing to use the default RoPE fallback."
+                            )
 
                         persistent = buffer_name not in getattr(
                             module, "_non_persistent_buffers_set", set()

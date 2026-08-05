@@ -21,7 +21,6 @@ import torch
 from omegaconf import DictConfig
 
 from rlinf.scheduler import Worker
-from rlinf.scheduler.hardware.accelerators import AcceleratorUtil
 from rlinf.utils.data_iter_utils import (
     get_iterator_k_split,
     merge_list,
@@ -573,8 +572,8 @@ class RolloutResult:
 
         max_response_len = training_seq_length - data_seq_length
 
-        target_device = AcceleratorUtil.get_device_type(
-            AcceleratorUtil.get_accelerator_type()
+        target_device = torch.device(
+            Worker.torch_device_type, Worker.torch_platform.current_device()
         )
         # when do_down_sample is enabled, there might be no valid rewards
         if self.rewards is not None and self.rewards.numel() == 0:
@@ -963,8 +962,8 @@ class DynamicRolloutResult:
             pad_token=pad_token,
         )
 
-        target_device = AcceleratorUtil.get_device_type(
-            AcceleratorUtil.get_accelerator_type()
+        target_device = torch.device(
+            Worker.torch_device_type, Worker.torch_platform.current_device()
         )
         batch = {
             "idx_to_traj": self.idx_to_traj,

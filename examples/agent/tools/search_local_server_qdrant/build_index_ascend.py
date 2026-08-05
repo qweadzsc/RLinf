@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 import datasets
 import torch
+import torch_npu  # noqa: F401
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     CollectionStatus,
@@ -37,6 +38,16 @@ global_encoder = None
 global_client = None
 
 
+def get_npu_device(index: int = 0) -> torch.device:
+    """Return an available NPU device for an encoder worker."""
+    if not torch.npu.is_available():
+        raise RuntimeError("No NPU device is available for Ascend index building")
+    device_count = torch.npu.device_count()
+    if device_count < 1:
+        raise RuntimeError("No NPU device is available for Ascend index building")
+    return torch.device(f"npu:{index % device_count}")
+
+
 def set_global(retrieval_method, config):
     from multiprocessing import current_process
 
@@ -49,7 +60,8 @@ def set_global(retrieval_method, config):
         pooling_method=config.retrieval_pooling_method,
         max_length=config.retrieval_query_max_length,
         use_fp16=config.retrieval_use_fp16,
-        device=torch.device(f"cuda:{process_idx % torch.cuda.device_count()}"),
+        device=get_npu_device(process_idx - 1),
+        attention_implementation="eager",
     )
 
     global global_client
@@ -89,25 +101,22 @@ class QdrantIndexBuilder:
 
     def build(self):
         # Initialize encoder first (needed for building collection)
-        self.topk = config.retrieval_topk
-        self.batch_size = config.retrieval_batch_size
-
-        if self.config.debug:
-            # Check if collection exists, if not, build it from corpus
-            logging.info("[DEBUG] Debug mode enabled. Deleting existing collection...")
-            try:
-                self.client.delete_collection(collection_name=self.collection_name)
-                logging.info(
-                    f"[DEBUG] Collection '{self.collection_name}' deleted successfully."
-                )
-            except Exception as e:
-                logging.info(
-                    f"[DEBUG] Warning: Failed to delete collection '{self.collection_name}': {e}"
-                )
+        self.topk = self.config.retrieval_topk
+        self.batch_size = self.config.retrieval_batch_size
 
         collections = self.client.get_collections().collections
         collection_names = [col.name for col in collections]
-        if self.collection_name in collection_names:
+        existing_document_count = 0
+        if self.collection_name in collection_names and self.config.resume:
+            existing_document_count = self.client.count(
+                collection_name=self.collection_name, exact=True
+            ).count
+            logging.info(
+                "Resuming collection '%s' from %d existing points.",
+                self.collection_name,
+                existing_document_count,
+            )
+        elif self.collection_name in collection_names:
             logging.info(
                 f"Collection '{self.collection_name}' already exists. deleting..."
             )
@@ -115,7 +124,9 @@ class QdrantIndexBuilder:
         else:
             logging.info(f"Collection '{self.collection_name}' not found.")
         logging.info("Building collection from corpus...")
-        self._build_collection_from_corpus(config.corpus_text_field)
+        self._build_collection_from_corpus(
+            self.config.corpus_text_field, existing_document_count
+        )
         logging.info(f"Collection '{self.collection_name}' built successfully!")
 
     @staticmethod
@@ -141,7 +152,7 @@ class QdrantIndexBuilder:
             wait=True,
         )
 
-    def _build_collection_from_corpus(self, text_field=None):
+    def _build_collection_from_corpus(self, text_field=None, existing_document_count=0):
         """Build Qdrant collection from corpus."""
         corpus_data = load_corpus(self.config.corpus_path)
         corpus_size = len(corpus_data)
@@ -155,7 +166,8 @@ class QdrantIndexBuilder:
             pooling_method=self.config.retrieval_pooling_method,
             max_length=self.config.retrieval_query_max_length,
             use_fp16=self.config.retrieval_use_fp16,
-            device=torch.device("cuda:1"),
+            device=get_npu_device(),
+            attention_implementation="eager",
         )
         sample_emb = encoder.encode(sample_text, is_query=False)
         vector_size = sample_emb.shape[1]
@@ -202,7 +214,24 @@ class QdrantIndexBuilder:
         batch_texts = []
         batch_indices = []
         batch_payload = []
-        for idx in tqdm(range(corpus_size), desc="Building collection"):
+        start_index = 0
+        if self.config.resume and existing_document_count:
+            default_overlap = self.config.build_parallel * 10 * self.batch_size * 2
+            overlap = self.config.resume_overlap or default_overlap
+            start_index = max(0, existing_document_count - overlap)
+            logging.info(
+                "Resuming from corpus index %d with a %d-document overlap.",
+                start_index,
+                existing_document_count - start_index,
+            )
+
+        expected_document_count = 0
+        for idx in tqdm(
+            range(start_index, corpus_size),
+            desc="Building collection",
+            initial=start_index,
+            total=corpus_size,
+        ):
             doc = corpus_data[idx]
             assert self.config.retrieval_method == "e5", (
                 f"Expected retrieval_method to be 'e5', but got '{self.config.retrieval_method}'"
@@ -216,6 +245,7 @@ class QdrantIndexBuilder:
             batch_texts.append(text)
             batch_indices.append(idx)
             batch_payload.append(doc)
+            expected_document_count += 1
 
             # Process batch when it reaches batch_size
             if len(batch_texts) >= self.batch_size:
@@ -230,7 +260,7 @@ class QdrantIndexBuilder:
                 # Control memory usage by waiting for some tasks to complete
                 # if too many tasks are queued (prevents memory overflow)
                 if handles.qsize() >= self.config.build_parallel * 10:
-                    handles.get().wait()
+                    handles.get().get()
 
                 # Reset batch variables for next batch
                 batch_texts = []
@@ -248,7 +278,7 @@ class QdrantIndexBuilder:
         # Wait for all remaining tasks to complete
         # This ensures all documents are processed before closing the pool
         while not handles.empty():
-            handles.get().wait()
+            handles.get().get()
 
         pool.close()
         pool.join()
@@ -261,11 +291,29 @@ class QdrantIndexBuilder:
             != CollectionStatus.GREEN
         ):
             time.sleep(1)
-        logging.info(
-            f"collection status of '{self.collection_name}' is green now, and infos are {self.client.get_collection(self.collection_name)}"
+        collection_info = self.client.get_collection(self.collection_name)
+        actual_document_count = self.client.count(
+            collection_name=self.collection_name, exact=True
+        ).count
+        expected_final_count = (
+            corpus_size if self.config.resume else expected_document_count
         )
         logging.info(
-            f"Successfully inserted {corpus_size} documents into collection '{self.collection_name}'"
+            "collection status of '%s' is %s; expected=%d, actual=%d",
+            self.collection_name,
+            collection_info.status,
+            expected_final_count,
+            actual_document_count,
+        )
+        if actual_document_count != expected_final_count:
+            raise RuntimeError(
+                "Qdrant point-count mismatch after build: "
+                f"expected {expected_final_count}, got {actual_document_count}"
+            )
+        logging.info(
+            "Successfully inserted %d non-empty documents into collection '%s'",
+            expected_final_count,
+            self.collection_name,
         )
 
 
@@ -292,7 +340,8 @@ class Config:
         retrieval_query_max_length: int = 256,
         retrieval_use_fp16: bool = False,
         retrieval_batch_size: int = 128,
-        debug: bool = False,
+        resume: bool = False,
+        resume_overlap: int | None = None,
     ):
         self.retrieval_method = retrieval_method
         self.retrieval_topk = retrieval_topk
@@ -309,14 +358,17 @@ class Config:
         self.retrieval_query_max_length = retrieval_query_max_length
         self.retrieval_use_fp16 = retrieval_use_fp16
         self.retrieval_batch_size = retrieval_batch_size
-        self.debug = debug
+        self.resume = resume
+        self.resume_overlap = resume_overlap
 
 
 if __name__ == "__main__":
     from multiprocessing import set_start_method
 
     set_start_method("spawn")
-    parser = argparse.ArgumentParser(description="Launch the local qdrant retriever.")
+    parser = argparse.ArgumentParser(
+        description="Build a local Qdrant index on Ascend NPUs."
+    )
     parser.add_argument(
         "--corpus_path",
         type=str,
@@ -357,10 +409,21 @@ if __name__ == "__main__":
         "--build_parallel", type=int, default=8, help="Qdrant build thread"
     )
     parser.add_argument(
-        "--debug",
-        type=bool,
-        default=False,
-        help="Enable debug mode to delete existing collection before building",
+        "--retrieval_batch_size",
+        type=int,
+        default=128,
+        help="Documents encoded per NPU forward pass.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Preserve an existing collection and resume with an overlapping range.",
+    )
+    parser.add_argument(
+        "--resume_overlap",
+        type=int,
+        default=None,
+        help="Documents to re-upsert before the estimated resume point.",
     )
     args = parser.parse_args()
     logging.getLogger().setLevel(logging.INFO)
@@ -378,8 +441,9 @@ if __name__ == "__main__":
         retrieval_pooling_method="mean",
         retrieval_query_max_length=256,
         retrieval_use_fp16=True,
-        retrieval_batch_size=1024,
-        debug=args.debug,
+        retrieval_batch_size=args.retrieval_batch_size,
+        resume=args.resume,
+        resume_overlap=args.resume_overlap,
     )
 
     # 2) Instantiate a global retriever so it is loaded once and reused.

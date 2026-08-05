@@ -33,7 +33,6 @@ from rlinf.scheduler.dynamic_scheduler.manager import RolloutScalingScheduler
 from rlinf.scheduler.dynamic_scheduler.utils import (
     get_scheduler_channel,
 )
-from rlinf.scheduler.hardware.accelerators import AcceleratorType, AcceleratorUtil
 from rlinf.utils.placement import ModelParallelComponentPlacement
 from rlinf.workers.rollout.sglang import Engine, io_struct
 from rlinf.workers.rollout.utils import (
@@ -144,7 +143,7 @@ class SGLangWorker(Worker):
         return sampling_params
 
     def _init_engine(self):
-        is_npu = AcceleratorUtil.get_accelerator_type() == AcceleratorType.NPU
+        is_npu = Worker.torch_device_type == "npu"
         use_cudagraph = not self._cfg_rollout.enforce_eager and not is_npu
 
         load_format = "dummy"  # dummy means randomize init weight
