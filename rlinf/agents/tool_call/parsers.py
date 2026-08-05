@@ -22,7 +22,31 @@ from rlinf.agents.tool_call.schema import (
     ToolRequest,
     ToolResponse,
 )
-from rlinf.algorithms.registry import register_toolcall_parser
+from rlinf.algorithms.registry import (
+    register_toolcall_parser,
+    register_toolresp_encoder,
+)
+
+
+@register_toolresp_encoder("qwen")
+def encode_searchr1_qwen_tool_response(tokenizer, tool_messages: list[dict[str, str]]):
+    """Encode a SearchR1 Qwen tool response without a chat template."""
+    if not tool_messages:
+        raise ValueError("At least one tool response is required")
+    return tokenizer.encode(tool_messages[0]["content"], add_special_tokens=False)
+
+
+@register_toolresp_encoder("deepseek-r1")
+def encode_deepseek_r1_tool_response(tokenizer, tool_messages: list[dict[str, str]]):
+    """Encode a DeepSeek-R1 tool response through its native chat template."""
+    if not tool_messages:
+        raise ValueError("At least one tool response is required")
+    token_ids = tokenizer.apply_chat_template(
+        tool_messages, add_generation_prompt=True, tokenize=True
+    )
+    if not token_ids or token_ids[0] != tokenizer.bos_token_id:
+        raise ValueError("Native tool template must start with a BOS token")
+    return token_ids[1:]
 
 
 @register_toolcall_parser("qwen2.5")
@@ -64,7 +88,7 @@ class Qwen25ToolCallParser:
         return content, function_calls
 
 
-@register_toolcall_parser("searchr1-qwen")
+@register_toolcall_parser("qwen")
 class Searchr1QwenToolCallParser:
     def __init__(self) -> None:
         self.tool_call_start_token: str = "<search>"
@@ -91,7 +115,7 @@ class Searchr1QwenToolCallParser:
         return content, function_calls
 
 
-@register_toolcall_parser("searchr1-deepseek-r1")
+@register_toolcall_parser("deepseek-r1")
 class Searchr1DeepSeekR1ToolCallParser:
     """Parse DeepSeek-R1 native function calls for the SearchR1 search tool."""
 
