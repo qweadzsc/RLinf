@@ -91,6 +91,7 @@ def _encoder_worker_init(init_queue) -> None:
         cfg["max_length"],
         cfg["use_fp16"],
         torch_device,
+        attention_implementation="eager",
     )
     _GLOBAL_ENCODER_DEVICE = f"npu:{device_index}"
 

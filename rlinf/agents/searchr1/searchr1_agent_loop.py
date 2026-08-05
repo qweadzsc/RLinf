@@ -18,6 +18,7 @@ from typing import Any
 
 from omegaconf import DictConfig
 
+from rlinf.algorithms.registry import get_toolresp_encoder
 from rlinf.algorithms.rewards.searchr1 import compute_score
 from rlinf.data.tool_call.tool_io_struct import ToolResponse
 from rlinf.utils.placement import ModelParallelComponentPlacement
@@ -46,9 +47,11 @@ class Searchr1AgentLoopWorker(MultiAgentLoopWorker):
         assert self.toolcall_parser is not None, (
             "toolcall_parser must be set in searchr1"
         )
-        self.use_native_tool_messages = cfg.agentloop.get(
-            "use_native_tool_messages", False
+        toolresp_encoder_name = cfg.agentloop.get("toolresp_encoder")
+        assert toolresp_encoder_name is not None, (
+            "toolresp_encoder must be set in searchr1"
         )
+        self.toolresp_encoder = get_toolresp_encoder(toolresp_encoder_name)
 
         # Inserting tool info requires re-encode token_ids, so the recompute_logprobs must be true.
         if self.cfg.runner.task_type != "reasoning_eval":
@@ -144,23 +147,6 @@ class Searchr1AgentLoopWorker(MultiAgentLoopWorker):
 
         return True, llm_response_ids, llm_response_text, llm_output
 
-    def encode_tool_resp(self, tool_messages: list[dict[str, str]]) -> list[int]:
-        """Encode tool responses using the configured model protocol."""
-        if not tool_messages:
-            raise ValueError("At least one tool response is required")
-
-        if not self.use_native_tool_messages:
-            return self.tokenizer.encode(
-                tool_messages[0]["content"], add_special_tokens=False
-            )
-
-        tool_response_ids = self.tokenizer.apply_chat_template(
-            tool_messages, add_generation_prompt=True, tokenize=True
-        )
-        if not tool_response_ids or tool_response_ids[0] != self.tokenizer.bos_token_id:
-            raise ValueError("Native tool template must start with a BOS token")
-        return tool_response_ids[1:]
-
     async def generate_tool_response(
         self,
         generate_context: dict[str, Any],
@@ -187,7 +173,7 @@ class Searchr1AgentLoopWorker(MultiAgentLoopWorker):
             message = {"role": "tool", "content": tool_response.text}
             tool_messages.append(message)
 
-        tool_response_ids = self.encode_tool_resp(tool_messages)
+        tool_response_ids = self.toolresp_encoder(self.tokenizer, tool_messages)
         max_tool_resp_len = self.max_resp_len - (
             len(turn_prompt_ids) + len(llm_response_ids) - len(problem_prompt_ids)
         )

@@ -146,6 +146,8 @@ def get_loss_scales(names: list[str]) -> list[Callable]:
 
 TOOLCALL_PARSER_REGISTRY: dict[str, Callable] = {}
 
+TOOLRESP_ENCODER_REGISTRY: dict[str, Callable] = {}
+
 
 def register_toolcall_parser(name: str):
     def decorator(cls):
@@ -163,3 +165,24 @@ def get_toolcall_parser(name: str) -> Callable:
         raise ValueError(f"Toolcall parser {name} not registered")
     cls = TOOLCALL_PARSER_REGISTRY[name]
     return cls()
+
+
+def register_toolresp_encoder(name: str):
+    """Register a function that encodes SearchR1 tool-response messages."""
+
+    def decorator(fn):
+        TOOLRESP_ENCODER_REGISTRY[name.lower()] = fn
+        return fn
+
+    return decorator
+
+
+def get_toolresp_encoder(name: str) -> Callable:
+    """Retrieve a SearchR1 tool-response encoder by name."""
+    if not TOOLRESP_ENCODER_REGISTRY:
+        from rlinf.algorithms import toolcall_parsers  # noqa: F401
+
+    encoder_name = name.lower()
+    if encoder_name not in TOOLRESP_ENCODER_REGISTRY:
+        raise ValueError(f"Tool response encoder {name} not registered")
+    return TOOLRESP_ENCODER_REGISTRY[encoder_name]

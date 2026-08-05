@@ -28,7 +28,6 @@ from torch.distributed import ProcessGroup, ReduceOp
 from typing_extensions import Self
 
 from rlinf.scheduler import Tracer, Worker
-from rlinf.scheduler.hardware.accelerators import AcceleratorUtil
 from rlinf.utils.timers import NamedTimer
 
 
@@ -925,8 +924,8 @@ def masked_normalization(
             Normalized x, with the same shape as x.
     """
     dtype = torch.float64 if high_precision else torch.float32
-    target_device = AcceleratorUtil.get_device_type(
-        AcceleratorUtil.get_accelerator_type()
+    target_device = torch.device(
+        Worker.torch_device_type, Worker.torch_platform.current_device()
     )
     x = x.to(dtype=dtype).to(target_device)
     if not inplace:

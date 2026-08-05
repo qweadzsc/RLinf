@@ -36,10 +36,8 @@ def clear_memory(sync=True):
     if sync:
         Worker.torch_platform.synchronize()
     gc.collect()
-    try:
+    if Worker.torch_device_type != "npu":
         Worker.torch_platform.ipc_collect()
-    except Exception:
-        pass
     Worker.torch_platform.empty_cache()
 
 
@@ -212,8 +210,7 @@ def retrieve_model_state_dict_in_cpu(model, offloaded_buffer=None):
                 offloaded_buffer[name].copy_(item.detach(), non_blocking=True)
             else:
                 item = item.detach().to(device="cpu", non_blocking=True, copy=True)
-                if not isinstance(item, DTensor):
-                    item = item.pin_memory()
+                item = item.pin_memory()
                 offloaded_buffer[name] = item
         else:
             offloaded_buffer[name] = item

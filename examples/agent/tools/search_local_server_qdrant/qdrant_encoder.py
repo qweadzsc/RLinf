@@ -19,9 +19,15 @@ from transformers import AutoModel, AutoTokenizer
 
 
 def load_model(
-    model_path: str, use_fp16: bool = False, device=torch.device("cuda")
+    model_path: str,
+    use_fp16: bool = False,
+    device=torch.device("cuda"),
+    attention_implementation: str | None = None,
 ) -> tuple[Any, Any]:
-    model = AutoModel.from_pretrained(model_path, trust_remote_code=True)
+    model_kwargs = {"trust_remote_code": True}
+    if attention_implementation is not None:
+        model_kwargs["attn_implementation"] = attention_implementation
+    model = AutoModel.from_pretrained(model_path, **model_kwargs)
     model.eval()
     model = model.to(device=device)
     if use_fp16:
@@ -50,7 +56,14 @@ def pooling(
 
 class Encoder:
     def __init__(
-        self, model_name, model_path, pooling_method, max_length, use_fp16, device
+        self,
+        model_name,
+        model_path,
+        pooling_method,
+        max_length,
+        use_fp16,
+        device,
+        attention_implementation: str | None = None,
     ):
         self.model_name = model_name
         self.model_path = model_path
@@ -60,7 +73,10 @@ class Encoder:
         self.device = device
 
         self.model, self.tokenizer = load_model(
-            model_path=model_path, use_fp16=use_fp16, device=self.device
+            model_path=model_path,
+            use_fp16=use_fp16,
+            device=self.device,
+            attention_implementation=attention_implementation,
         )
         self.model.eval()
 
