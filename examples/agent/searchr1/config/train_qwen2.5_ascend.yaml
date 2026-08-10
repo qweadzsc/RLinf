@@ -31,7 +31,7 @@ runner:
   seq_length: 4096
 
   enable_dynamic_batch_size: True
-  max_tokens_per_mbs: 4096
+  max_tokens_per_mbs: 6144
 
   resume_dir: null
   experiment_name: searchr1-grpo-qwen2.5-3b-instruct-fsdp-${now:%Y%m%d%H%M%S}
@@ -127,11 +127,11 @@ tools:
 
 rollout:
   group_name: "RolloutGroup"
-  gpu_memory_utilization: 0.55
+  gpu_memory_utilization: 0.75
   model:
     model_path: /path/to/model/Qwen2.5-3B-Instruct  # https://huggingface.co/Qwen/Qwen2.5-3B-Instruct
     model_type: qwen2.5
-    precision: ${actor.model.precision}
+    precision: bf16
   enforce_eager: False          # if False, rollout engine will capture cuda graph, which will take more time to initialize.
   distributed_executor_backend: mp   # ray or mp
   disable_log_stats: False
@@ -224,8 +224,8 @@ actor:
     gradient_checkpointing: True
     gradient_checkpointing_use_reentrant: False
     mixed_precision:
-      param_dtype: "fp32"
-      reduce_dtype: "fp32"
+      param_dtype: "bf16"
+      reduce_dtype: "bf16"
       buffer_dtype: "fp32"
 
 
