@@ -26,13 +26,13 @@ runner:
   max_steps: -1
 
   val_check_interval: 30
-  save_interval: 30
+  save_interval: 500
 
   seq_length: 7096
 
   resume_dir: null
   experiment_name: searchr1-grpo-qwen2.5-3b-ins-eval
-  output_dir: ../results
+  output_dir: ./logs
 
 
 algorithm:
@@ -100,7 +100,7 @@ rollout:
   group_name: "RolloutGroup"
   gpu_memory_utilization: 0.8
   model:
-    model_path: /path/to/eval/model
+    model_path: /path/to/model/Qwen2.5-3B-Instruct
     model_type: qwen2.5
     precision: fp16
   enforce_eager: False          # if False, rollout engine will capture cuda graph, which will take more time to initialize.
