@@ -30,6 +30,8 @@ import ray
 import ray.util.state
 import torch
 
+from rlinf.utils.resource_monitor import collect_worker_resource_snapshot
+
 from ..cluster import (
     Cluster,
     ClusterEnvVar,
@@ -542,6 +544,15 @@ class Worker(metaclass=WorkerMeta):
                 ]
             )
         return infos
+
+    def get_resource_snapshot(self) -> dict[str, Any]:
+        """Return current process and accelerator memory usage for this worker."""
+        return collect_worker_resource_snapshot(
+            worker_group=self._group_name,
+            rank=self._rank,
+            device_type=self.torch_device_type,
+            platform=self.torch_platform,
+        )
 
     @classmethod
     def create_group(

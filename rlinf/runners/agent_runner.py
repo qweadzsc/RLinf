@@ -14,6 +14,7 @@
 
 import itertools
 import logging
+import os
 import typing
 from typing import Optional, Union
 
@@ -25,6 +26,10 @@ from rlinf.runners.reasoning_runner import ReasoningRunner
 from rlinf.scheduler import Channel
 from rlinf.scheduler import WorkerGroupFuncResult as Handle
 from rlinf.utils.placement import ModelParallelComponentPlacement
+from rlinf.utils.resource_monitor import (
+    ResourceTraceWriter,
+    summarize_resource_snapshots,
+)
 from rlinf.utils.runner_utils import check_progress
 from rlinf.workers.actor.megatron_actor_worker import MegatronActor
 from rlinf.workers.agent.agent_loop import AgentLoopWorker
@@ -109,6 +114,57 @@ class AgentRunner(ReasoningRunner):
         self.tool_output_channel = Channel.create("ToolOutput")
         if self.recompute_logprobs:
             self.inference_channel = Channel.create("Inference", local=True)
+
+        resource_monitor_cfg = self.cfg.runner.get("resource_monitor") or {}
+        self._resource_monitor_enabled = bool(
+            resource_monitor_cfg.get("enabled", False)
+        )
+        self._resource_monitor_interval = int(resource_monitor_cfg.get("interval", 1))
+        assert self._resource_monitor_interval > 0, (
+            "runner.resource_monitor.interval must be a positive integer"
+        )
+        self._resource_trace_writer = None
+        if self._resource_monitor_enabled:
+            output_path = resource_monitor_cfg.get("output_path")
+            if output_path is None:
+                output_path = os.path.join(
+                    self.cfg.runner.logger.log_path, "resource_metrics.jsonl"
+                )
+            self._resource_trace_writer = ResourceTraceWriter(str(output_path))
+
+    def _log_resource_snapshot(
+        self, time_metrics: dict[str, float], logging_step: int
+    ) -> None:
+        """Collect and persist one end-of-step snapshot from each worker group."""
+        if (
+            not self._resource_monitor_enabled
+            or self.global_steps % self._resource_monitor_interval != 0
+        ):
+            return
+
+        worker_groups = [self.actor, self.rollout, self.agent_loop]
+        if self.reward is not None:
+            worker_groups.append(self.reward)
+        if self.inference is not None:
+            worker_groups.append(self.inference)
+        worker_groups.extend(self.tool_workers)
+        worker_groups.extend(self.solid_rollouts.values())
+
+        snapshots = []
+        for worker_group in worker_groups:
+            snapshots.extend(worker_group.get_resource_snapshot().wait())
+
+        resource_metrics = summarize_resource_snapshots(snapshots)
+        self.metric_logger.log(resource_metrics, logging_step)
+        assert self._resource_trace_writer is not None
+        self._resource_trace_writer.write(
+            {
+                "global_step": self.global_steps,
+                "logging_step": logging_step,
+                "time_s": time_metrics,
+                "workers": snapshots,
+            }
+        )
 
     def init_rollout_workers(self):
         """init rollout workers, tool workers and agent loop worker."""
@@ -288,6 +344,8 @@ class AgentRunner(ReasoningRunner):
                     ) * self.cfg.algorithm.n_minibatches
                     # add prefix to the metrics
                     log_time_metrics = {f"time/{k}": v for k, v in time_metrics.items()}
+
+                    self._log_resource_snapshot(time_metrics, logging_steps)
 
                     self.metric_logger.log(agent_metrics, logging_steps)
                     self.metric_logger.log(log_time_metrics, logging_steps)
