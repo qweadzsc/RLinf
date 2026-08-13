@@ -23,15 +23,15 @@ runner:
     logger_backends: ["tensorboard"] # wandb, swanlab
 
   max_epochs: 1
-  max_steps: -1
+  max_steps: 201
 
   val_check_interval: 25
-  save_interval: 500
+  save_interval: -1
 
-  seq_length: 4096
+  seq_length: 7096
 
   enable_dynamic_batch_size: True
-  max_tokens_per_mbs: 6144
+  max_tokens_per_mbs: 8192
 
   resume_dir: null
   experiment_name: searchr1-grpo-qwen2.5-3b-instruct-fsdp-${now:%Y%m%d%H%M%S}
@@ -66,8 +66,6 @@ algorithm:
   clip_ratio_c: null # 3.0
   clip_ratio_low: null # if null or not set, will use ratio_clip_eps
   clip_ratio_high: null # if null or not set, will use ratio_clip_eps
-  clip_log_ratio_min: -20
-  clip_log_ratio_max: 20
 
   adv_type: grpo_dynamic
   loss_scales: ["group_level", "agent_level", "turn_level"] # used for implementing our GRPO alg. Details in `rlinf/algorithms/loss_scales.py`
@@ -92,7 +90,7 @@ algorithm:
 
 data:
   type: math
-  max_prompt_length: 2048
+  max_prompt_length: 4096
   filter_prompt_by_length: True
   rollout_batch_size: 512
   val_rollout_batch_size: null
@@ -104,7 +102,6 @@ data:
   validation_shuffle: True
   seed: 1234
   train_data_paths: ["/path/to/data/train.jsonl"]
-  # val_data_paths: ["/path/to/data/test.jsonl"]
 
 
 agentloop:
@@ -127,9 +124,9 @@ tools:
 
 rollout:
   group_name: "RolloutGroup"
-  gpu_memory_utilization: 0.75
+  gpu_memory_utilization: 0.5
   model:
-    model_path: /path/to/model/Qwen2.5-3B-Instruct  # https://huggingface.co/Qwen/Qwen2.5-3B-Instruct
+    model_path: /path/to/model/Qwen2.5-3B-Instruct
     model_type: qwen2.5
     precision: bf16
   enforce_eager: False          # if False, rollout engine will capture cuda graph, which will take more time to initialize.
@@ -159,7 +156,7 @@ rollout:
   max_running_requests: 128     # the maximum number of running requests in the rollout engine.
   cuda_graph_max_bs: 128        # the maximum batch size for cuda graph. If the batch size is larger than this, cuda graph will not be used.
 
-  validate_weight_first_sync: False # Avoid loading a duplicate HF model only for first-sync validation.
+  validate_weight_first_sync: False # avoid loading a duplicate HF model for first-sync validation.
   validate_weight: False        # whether to send all weights at first for weight comparison.
   validate_save_dir: null       # the directory to save the weights for comparison. If validate_weight is True, this will be used to save the weights for comparison.
   print_outputs: False          # whether to print the outputs (token ids, texts, etc.) of rollout engine.
@@ -185,6 +182,7 @@ actor:
   enable_dp_load_balance: True
   seed: 1234
   pack_traj: True
+  sync_precision: ${rollout.model.precision}
 
   model:
     model_type: ${rollout.model.model_type}
@@ -197,13 +195,15 @@ actor:
     # Match the NV SearchR1 Qwen schedule. FSDP advances this scheduler once
     # per outer training step; 331 steps x 2 minibatches matches NV's 662
     # optimizer-step schedule.
+    optimizer: adam
     lr: 1.0e-6
     lr_scheduler: constant
-    total_training_steps: 331
+    total_training_steps: 662
     lr_warmup_steps_ratio: 0.285
     adam_beta1: 0.9
     adam_beta2: 0.95
     adam_eps: 1.0e-05
+    min_lr: 0.0
     weight_decay: 0.01
     clip_grad: 0.8
 
@@ -215,18 +215,23 @@ actor:
 
   fsdp_config:
     strategy: "fsdp2"
-    save_full_model_weights: False
-    init_model_with_meta_device: False
+    sharding_strategy: full_shard
+    gradient_checkpointing: True
     cpu_offload: False
     offload_pin_memory: True
     reshard_after_forward: True
     enable_gradient_accumulation: False
-    gradient_checkpointing: True
-    gradient_checkpointing_use_reentrant: False
+    forward_prefetch: False
+    limit_all_gathers: False
+    backward_prefetch: null
+    use_orig_params: False
+    use_liger_kernel: False
     mixed_precision:
-      param_dtype: "bf16"
-      reduce_dtype: "bf16"
-      buffer_dtype: "fp32"
+      param_dtype: bf16
+      reduce_dtype: fp32
+      buffer_dtype: fp32
+    grad_scaler:
+      enabled: False
 
 
 inference:
