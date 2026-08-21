@@ -34,7 +34,7 @@ runner:
   max_tokens_per_mbs: 8192
 
   resume_dir: null
-  experiment_name: searchr1-grpo-qwen2.5-3b-instruct-fsdp-${now:%Y%m%d%H%M%S}
+  experiment_name: ascend-qwen2.5-3b-instruct-fsdp-${now:%Y%m%d%H%M%S}
   output_dir: ./logs
 
 
@@ -124,7 +124,7 @@ tools:
 
 rollout:
   group_name: "RolloutGroup"
-  gpu_memory_utilization: 0.5
+  gpu_memory_utilization: 0.75
   model:
     model_path: /path/to/model/Qwen2.5-3B-Instruct
     model_type: qwen2.5
@@ -231,7 +231,7 @@ actor:
       reduce_dtype: fp32
       buffer_dtype: fp32
     grad_scaler:
-      enabled: False
+      enabled: True
 
 
 inference:
