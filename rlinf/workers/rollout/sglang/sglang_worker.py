@@ -160,7 +160,7 @@ class SGLangWorker(Worker):
         else:
             load_format = "auto"
 
-        server_args = ServerArgs(
+        server_args_kwargs = dict(
             model_path=self._cfg_rollout.model.model_path,
             disable_cuda_graph=not use_cudagraph,
             cuda_graph_max_bs=min(
@@ -196,6 +196,16 @@ class SGLangWorker(Worker):
             tool_call_parser=self._cfg_rollout.sglang.get("tool_call_parser", None),
             trust_remote_code=self._cfg_rollout.model.trust_remote_code,
         )
+
+        sampling_backend = self._cfg_rollout.sglang.get("sampling_backend")
+        if sampling_backend is not None:
+            server_args_kwargs["sampling_backend"] = sampling_backend
+
+        random_seed = self._cfg_rollout.sglang.get("random_seed")
+        if random_seed is not None:
+            server_args_kwargs["random_seed"] = int(random_seed) + self._rank
+
+        server_args = ServerArgs(**server_args_kwargs)
 
         self.log_on_first_rank(f"{server_args=}")
         self._engine = Engine(
