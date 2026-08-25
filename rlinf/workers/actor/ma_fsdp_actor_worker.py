@@ -124,16 +124,7 @@ class MAFSDPActor(FSDPActor):
                     dim=0,
                 ).to(Worker.torch_device_type)
 
-        attn_implementation = self.cfg.actor.model.get(
-            "attn_implementation", "flash_attention_2"
-        )
-        # Packed inputs encode sequence boundaries through FlashAttention cu_seqlens.
-        # SDPA and eager attention need the original padded batch and mask instead.
-        use_packed_input = (
-            self.enable_dynamic_batch_size
-            and attn_implementation == "flash_attention_2"
-        )
-        if use_packed_input:
+        if self.enable_dynamic_batch_size:
             max_seq_len_pack = self.max_tokens_per_mbs
             max_seq_len_unpack = seq_length
 
@@ -170,7 +161,7 @@ class MAFSDPActor(FSDPActor):
         logits: torch.Tensor = outputs.logits
         logits.div_(self.cfg.algorithm.sampling_params.temperature)
 
-        if use_packed_input:
+        if self.enable_dynamic_batch_size:
             # unpack_fsdp_logprobs is expected to return logprobs unpacked to
             # [B, max_seq_len_unpack], aligned with token positions.
             logprobs = unpack_fsdp_logprobs(
@@ -204,7 +195,7 @@ class MAFSDPActor(FSDPActor):
                 logprobs[:, 1:] = token_logprobs
 
         if calculate_entropy:
-            if use_packed_input:
+            if self.enable_dynamic_batch_size:
                 pos_entropy = compute_entropy_from_logits(logits)
 
                 pos_entropy = unpack_sequences(
