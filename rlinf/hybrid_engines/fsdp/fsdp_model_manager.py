@@ -171,12 +171,20 @@ class FSDPModelManager:
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         device = torch.device(f"{Worker.torch_device_type}:{local_rank}")
 
+        attn_implementation = cfg.model.get("attn_implementation", "flash_attention_2")
+        if attn_implementation == "ascend_fusion":
+            if Worker.torch_device_type != "npu":
+                raise ValueError("attn_implementation=ascend_fusion requires an NPU.")
+            from rlinf.hybrid_engines.fsdp.ascend_attention import (
+                register_ascend_fusion_attention,
+            )
+
+            register_ascend_fusion_attention()
+
         model_config = AutoConfig.from_pretrained(
             cfg.model.model_path,
             trust_remote_code=True,
-            attn_implementation=cfg.model.get(
-                "attn_implementation", "flash_attention_2"
-            ),
+            attn_implementation=attn_implementation,
         )
 
         if use_gptq:

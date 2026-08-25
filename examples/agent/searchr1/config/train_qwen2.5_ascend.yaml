@@ -187,8 +187,8 @@ actor:
   model:
     model_type: ${rollout.model.model_type}
     model_path: ${rollout.model.model_path}
-    precision: fp32
-    attn_implementation: eager
+    precision: bf16
+    attn_implementation: ascend_fusion
     encoder_seq_length: ${runner.seq_length}
 
   optim:
