@@ -20,6 +20,7 @@ import torch
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
 _CAUSAL_MASK_CACHE: dict[tuple[str, torch.dtype], torch.Tensor] = {}
+_CAUSAL_MASK_SIZE = 2048
 _ORIGINAL_QWEN2_UPDATE_CAUSAL_MASK = None
 _ORIGINAL_QWEN2_CREATE_CAUSAL_MASK = None
 
@@ -45,21 +46,25 @@ def _get_actual_seq_lengths(position_ids: torch.Tensor) -> tuple[int, ...]:
     return tuple(sequence_ends.cpu().tolist())
 
 
-def _get_causal_mask(query: torch.Tensor, max_sequence_length: int) -> torch.Tensor:
-    """Return the upper-triangular mask required by NPU fused causal attention."""
+def _get_causal_mask(query: torch.Tensor) -> torch.Tensor:
+    """Return Ascend's compressed causal mask for sparse mode 3.
+
+    ``npu_fusion_attention`` requires a fixed [2048, 2048] mask in this
+    mode, independently of the actual variable sequence lengths.
+    """
     cache_key = (str(query.device), query.dtype)
     mask = _CAUSAL_MASK_CACHE.get(cache_key)
-    if mask is None or mask.shape[0] < max_sequence_length:
+    if mask is None:
         mask = torch.triu(
             torch.ones(
-                (max_sequence_length, max_sequence_length),
+                (_CAUSAL_MASK_SIZE, _CAUSAL_MASK_SIZE),
                 dtype=torch.bool,
                 device=query.device,
             ),
             diagonal=1,
         )
         _CAUSAL_MASK_CACHE[cache_key] = mask
-    return mask[:max_sequence_length, :max_sequence_length]
+    return mask
 
 
 def ascend_fusion_attention_forward(
@@ -98,8 +103,7 @@ def ascend_fusion_attention_forward(
         raise ValueError("ascend_fusion requires position_ids for packed inputs.")
 
     actual_seq_lengths = _get_actual_seq_lengths(position_ids)
-    max_sequence_length = int(position_ids.max().item()) + 1
-    causal_mask = _get_causal_mask(query, max_sequence_length)
+    causal_mask = _get_causal_mask(query)
 
     batch_size, num_heads, sequence_length, head_dim = query.shape
     if batch_size != 1:
