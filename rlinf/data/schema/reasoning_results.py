@@ -27,6 +27,7 @@ from rlinf.utils.data_iter_utils import (
     merge_tensor,
     split_list,
 )
+from rlinf.utils.torch_functionals import batch_pad_to_fixed_len
 
 if TYPE_CHECKING:
     from vllm.outputs import CompletionOutput
