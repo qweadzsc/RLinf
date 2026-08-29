@@ -164,18 +164,10 @@ class Scheduler(_Scheduler):
         if rollout_sync_mode_collocated:
             for name, handle in state_dict.items():
                 func, args = handle
-                if Worker.torch_device_type == "npu":
-                    new_weight = func(*args).to(
-                        torch.device(
-                            Worker.torch_device_type,
-                            Worker.torch_platform.current_device(),
-                        )
-                    )
-                else:
-                    # Keep the original CUDA path unchanged.
-                    list_args = list(args)
-                    list_args[6] = torch.cuda.current_device()
-                    new_weight = func(*list_args)
+                list_args = list(args)
+                # Use the receiver device id for direct tensor rebuild.
+                list_args[6] = Worker.torch_platform.current_device()
+                new_weight = func(*list_args)
                 batch_weight.append((rename(name), new_weight))
         else:
             # disaggregate mode, recv tensor directly
