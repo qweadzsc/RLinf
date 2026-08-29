@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import logging
-from contextlib import nullcontext
 from importlib.metadata import version
 from typing import Any, Callable, Literal
 
@@ -31,7 +30,6 @@ from sglang.srt.managers.scheduler import (
 )
 
 from rlinf.scheduler import Worker, WorkerAddress
-from rlinf.scheduler.hardware.accelerators import AcceleratorType, AcceleratorUtil
 from rlinf.utils.placement import (
     ModelParallelComponentPlacement,
     RolloutSyncMode,
@@ -135,6 +133,24 @@ class Scheduler(_Scheduler):
 
         return result
 
+    @staticmethod
+    def _hf_to_sglang_name(model) -> Callable[[str], str]:
+        """Map Hugging Face parameter names to the loaded SGLang model names."""
+        param_names = dict(model.named_parameters()).keys()
+        renames = []
+        if any(name.startswith("visual.") for name in param_names):
+            renames.append(("model.visual.", "visual."))
+        if any(name.startswith("model.layers.") for name in param_names):
+            renames.append(("model.language_model.", "model."))
+
+        def rename(name: str) -> str:
+            for src, dst in renames:
+                if name.startswith(src):
+                    return dst + name[len(src) :]
+            return name
+
+        return rename
+
     def batch_load_hf_weight(self, state_dict: dict[str, Any]) -> Any:
         assert self.weight_reload == "sync", (
             "only sglang with 'sync' can run 'batch_load_hf_weight'"
@@ -148,11 +164,18 @@ class Scheduler(_Scheduler):
         if rollout_sync_mode_collocated:
             for name, handle in state_dict.items():
                 func, args = handle
-                list_args = list(args)
-                # NOTE: the key is to change device id to the current device id
-                # in case two processes have different CUDA_VISIBLE_DEVICES
-                list_args[6] = torch.cuda.current_device()
-                new_weight = func(*list_args)
+                if Worker.torch_device_type == "npu":
+                    new_weight = func(*args).to(
+                        torch.device(
+                            Worker.torch_device_type,
+                            Worker.torch_platform.current_device(),
+                        )
+                    )
+                else:
+                    # Keep the original CUDA path unchanged.
+                    list_args = list(args)
+                    list_args[6] = torch.cuda.current_device()
+                    new_weight = func(*list_args)
                 batch_weight.append((rename(name), new_weight))
         else:
             # disaggregate mode, recv tensor directly
@@ -289,12 +312,6 @@ class Scheduler(_Scheduler):
             validate_weight_first_sync = self.cfg.rollout.get(
                 "validate_weight_first_sync", False
             )
-            if self.cfg.actor.training_backend == "fsdp":
-                # FSDP rollout sync rebuilds tensors from actor-provided payloads rather
-                # than comparing two identical HF initialization paths. The first-sync
-                # norm check is therefore prone to false positives and is only reliable
-                # for the Megatron path.
-                validate_weight_first_sync = False
             if self.cfg.runner.resume_dir is not None:
                 # validate_weight_first_sync compare hf weights with megatron weights,
                 # and if resume_dir is enabled, hf weights can't equal to megatron's.
@@ -312,7 +329,7 @@ class Scheduler(_Scheduler):
             for key, value in model.state_dict().items():
                 cpu_state_dict[key] = value.to("cpu", non_blocking=True)
             self.cpu_state_dict = cpu_state_dict
-            torch.cuda.synchronize()
+            Worker.torch_platform.synchronize()
 
             self._rlinf_worker.log_info(
                 f"Running Scheduler dp rank {self._rlinf_worker.get_parent_rank()}, tp rank {self.tp_rank}, load weight from cpu"

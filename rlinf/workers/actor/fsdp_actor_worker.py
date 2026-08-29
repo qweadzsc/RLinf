@@ -68,7 +68,6 @@ from rlinf.utils.utils import (
     compute_logprobs_from_logits,
     get_loss_agg_func,
     masked_mean,
-    reshape_entropy,
 )
 from rlinf.workers.rollout.utils import RankMapper
 
