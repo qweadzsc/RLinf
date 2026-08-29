@@ -22,11 +22,10 @@ from rlinf.algorithms.registry import (
     register_toolcall_parser,
     register_toolresp_encoder,
 )
-from rlinf.data.tool_call.tool_io_struct import (
+from rlinf.agents.tool_call.schema import (
     ToolRequest,
     ToolResponse,
 )
-from rlinf.algorithms.registry import register_toolcall_parser
 
 
 @register_toolresp_encoder("qwen")
