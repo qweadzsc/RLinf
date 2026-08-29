@@ -18,8 +18,7 @@ from functools import partial
 from typing import Optional
 
 import torch
-from omegaconf import DictConfig, OmegaConf
-from torch import nn
+from omegaconf import DictConfig
 from torch.distributed.tensor import DTensor
 from torch.multiprocessing.reductions import reduce_tensor
 
@@ -68,7 +67,6 @@ from rlinf.utils.utils import (
     compute_logprobs_from_logits,
     get_loss_agg_func,
     masked_mean,
-    reshape_entropy,
 )
 from rlinf.workers.rollout.utils import RankMapper
 

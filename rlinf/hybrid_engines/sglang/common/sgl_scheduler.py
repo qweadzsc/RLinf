@@ -133,6 +133,24 @@ class Scheduler(_Scheduler):
 
         return result
 
+    @staticmethod
+    def _hf_to_sglang_name(model) -> Callable[[str], str]:
+        """Map Hugging Face parameter names to the loaded SGLang model names."""
+        param_names = dict(model.named_parameters()).keys()
+        renames = []
+        if any(name.startswith("visual.") for name in param_names):
+            renames.append(("model.visual.", "visual."))
+        if any(name.startswith("model.layers.") for name in param_names):
+            renames.append(("model.language_model.", "model."))
+
+        def rename(name: str) -> str:
+            for src, dst in renames:
+                if name.startswith(src):
+                    return dst + name[len(src) :]
+            return name
+
+        return rename
+
     def batch_load_hf_weight(self, state_dict: dict[str, Any]) -> Any:
         assert self.weight_reload == "sync", (
             "only sglang with 'sync' can run 'batch_load_hf_weight'"
@@ -158,7 +176,7 @@ class Scheduler(_Scheduler):
                     list_args = list(args)
                     list_args[6] = torch.cuda.current_device()
                     new_weight = func(*list_args)
-                batch_weight.append((name, new_weight))
+                batch_weight.append((rename(name), new_weight))
         else:
             # disaggregate mode, recv tensor directly
             for name, tensor in state_dict.items():
