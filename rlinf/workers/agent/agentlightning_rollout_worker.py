@@ -19,6 +19,7 @@ import os
 import typing
 import uuid
 from typing import Any, Optional, cast
+from urllib.parse import urlparse
 
 import numpy as np
 import torch
@@ -155,12 +156,30 @@ class AgentLightningRolloutWorker(Worker):
 
     async def _update_proxy_server(self):
         from agentlightning.llm_proxy import LLMProxy, ModelConfig
+        from agentlightning.utils.server_launcher import PythonServerLauncherArgs
 
         model_name = (
             os.path.basename(str(self.model))
             if os.path.sep in str(self.model)
             else str(self.model)
         )
+
+        # LiteLLM probes the rollout servers through their advertised node
+        # addresses. Keep all of those internal endpoints out of a user-level
+        # HTTP proxy, otherwise proxy startup can wait indefinitely even though
+        # the local SGLang server is healthy.
+        no_proxy_hosts = {
+            host.strip()
+            for host in os.environ.get("NO_PROXY", "").split(",")
+            if host.strip()
+        }
+        for address in self.server_addresses:
+            parsed = urlparse(address if "://" in address else f"//{address}")
+            if parsed.hostname:
+                no_proxy_hosts.add(parsed.hostname)
+        no_proxy = ",".join(sorted(no_proxy_hosts))
+        os.environ["NO_PROXY"] = no_proxy
+        os.environ["no_proxy"] = no_proxy
 
         model_list = [
             ModelConfig(
@@ -181,7 +200,17 @@ class AgentLightningRolloutWorker(Worker):
         # which a port that was free at initialization may be claimed by
         # another job on a shared CI runner.
         self.llm_proxy = LLMProxy(
-            port=self.acquire_free_port(),
+            launcher_args=PythonServerLauncherArgs(
+                port=self.acquire_free_port(),
+                host="0.0.0.0",
+                # The proxy is consumed by local agent runners. Pin its startup
+                # health check to loopback so a cluster-wide HTTP proxy cannot
+                # intercept it.
+                access_host="127.0.0.1",
+                launch_mode="mp",
+                healthcheck_url="/health",
+                startup_timeout=60.0,
+            ),
             model_list=model_list,
             store=self.store,
         )

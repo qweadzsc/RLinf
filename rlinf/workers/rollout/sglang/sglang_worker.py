@@ -143,7 +143,8 @@ class SGLangWorker(Worker):
         return sampling_params
 
     def _init_engine(self):
-        use_cudagraph = not self._cfg_rollout.enforce_eager
+        # is_npu = Worker.torch_device_type == "npu"
+        use_cudagraph = not self._cfg_rollout.enforce_eager  # and not is_npu
 
         load_format = "dummy"  # dummy means randomize init weight
         if self.weight_reload == "sync":
@@ -159,42 +160,42 @@ class SGLangWorker(Worker):
         else:
             load_format = "auto"
 
-        server_args_kwargs = dict(
-            model_path=self._cfg_rollout.model.model_path,
-            disable_cuda_graph=not use_cudagraph,
-            cuda_graph_max_bs=min(
+        server_args_kwargs = {
+            "model_path": self._cfg_rollout.model.model_path,
+            "disable_cuda_graph": not use_cudagraph,
+            "cuda_graph_max_bs": min(
                 self._cfg_rollout.cuda_graph_max_bs,
                 self._cfg_rollout.max_running_requests,
             ),
-            tp_size=self._cfg_rollout.tensor_parallel_size,
+            "tp_size": self._cfg_rollout.tensor_parallel_size,
             # sglang >=0.5.11 drops the `enable_ep_moe` flag and enables EP via ep_size > 1.
-            ep_size=(
+            "ep_size": (
                 self._cfg_rollout.tensor_parallel_size
                 if self._cfg_rollout.sglang.get("enable_ep_moe", False)
                 else 1
             ),
-            mem_fraction_static=self._cfg_rollout.gpu_memory_utilization,
-            enable_memory_saver=use_cudagraph,
-            enable_torch_compile=self._cfg_rollout.sglang.use_torch_compile,
-            torch_compile_max_bs=min(
+            "mem_fraction_static": self._cfg_rollout.gpu_memory_utilization,
+            "enable_memory_saver": use_cudagraph,  # or is_npu,
+            "enable_torch_compile": self._cfg_rollout.sglang.use_torch_compile,
+            "torch_compile_max_bs": min(
                 self._cfg_rollout.sglang.torch_compile_max_bs,
                 self._cfg_rollout.max_running_requests,
             ),
-            load_format=load_format,
+            "load_format": load_format,
             # disable_overlap_schedule=True,
-            dtype=torch_dtype_from_precision(self._cfg_rollout.model.precision),
+            "dtype": torch_dtype_from_precision(self._cfg_rollout.model.precision),
             # sglang will only return text/output_ids when skip_tokenizer_init=False/True
             # text is not needed in RL training, so set to True can save time.
-            skip_tokenizer_init=not self._cfg_rollout.detokenize,
+            "skip_tokenizer_init": not self._cfg_rollout.detokenize,
             # sglang will print statistics every decode_log_interval decode steps.
-            decode_log_interval=self._cfg_rollout.sglang.decode_log_interval,
-            attention_backend=self._cfg_rollout.sglang.attention_backend,
-            log_level="info",
-            max_running_requests=self._cfg_rollout.max_running_requests,
-            dist_init_addr=f"127.0.0.1:{str(self.acquire_free_port())}",
-            tool_call_parser=self._cfg_rollout.sglang.get("tool_call_parser", None),
-            trust_remote_code=self._cfg_rollout.model.trust_remote_code,
-        )
+            "decode_log_interval": self._cfg_rollout.sglang.decode_log_interval,
+            "attention_backend": self._cfg_rollout.sglang.attention_backend,
+            "log_level": "info",
+            "max_running_requests": self._cfg_rollout.max_running_requests,
+            "dist_init_addr": f"127.0.0.1:{str(self.acquire_free_port())}",
+            "tool_call_parser": self._cfg_rollout.sglang.get("tool_call_parser", None),
+            "trust_remote_code": self._cfg_rollout.model.trust_remote_code,
+        }
 
         sampling_backend = self._cfg_rollout.sglang.get("sampling_backend")
         if sampling_backend is not None:

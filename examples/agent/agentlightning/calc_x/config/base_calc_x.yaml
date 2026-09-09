@@ -34,8 +34,8 @@ runner:
   max_tokens_per_mbs: 11008
 
   resume_dir: null
-  experiment_name: calc-x-agl-base
-  output_dir: ../results
+  experiment_name: calc-x-agl-base-${now:%Y%m%d%H%M%S}
+  output_dir: ./results
 
 algorithm:
   group_size: 4
