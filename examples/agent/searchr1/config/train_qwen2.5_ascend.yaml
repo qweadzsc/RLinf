@@ -107,7 +107,7 @@ data:
 agentloop:
   group_name: "AgentLoopGroup"
   toolcall_parser: "qwen"
-  toolresp_encoder: "qwen"
+  use_native_tool_messages: false
   max_turns: 2
   max_tool_response_length: 500
   tool_response_truncate_side: "right"
