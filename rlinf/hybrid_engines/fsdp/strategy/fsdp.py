@@ -39,10 +39,6 @@ from rlinf.hybrid_engines.fsdp.utils import (
 from rlinf.scheduler import Worker
 from rlinf.utils.utils import clear_memory
 
-from functools import partial
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import MixedPrecision
-
 
 def get_local_npu_device():
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -55,13 +51,10 @@ def make_meta_init_fn(target_device: torch.device, root_model: nn.Module = None)
     FSDP1 calls param_init_fn on meta modules before flattening and sharding.
     This must materialize the current module's direct parameters and buffers on this rank's NPU.
     """
+
     def init_fn(module: nn.Module):
-        has_meta_param = any(
-            p.is_meta for p in module.parameters(recurse=False)
-        )
-        has_meta_buffer = any(
-            b.is_meta for b in module.buffers(recurse=False)
-        )
+        has_meta_param = any(p.is_meta for p in module.parameters(recurse=False))
+        has_meta_buffer = any(b.is_meta for b in module.buffers(recurse=False))
 
         if not has_meta_param and not has_meta_buffer:
             return

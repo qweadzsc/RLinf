@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import time
-import subprocess
 from contextlib import contextmanager
 from functools import partial
 from typing import Optional
