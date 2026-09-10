@@ -689,7 +689,7 @@ def warmup_optimizer_state(optimizer: Optimizer) -> None:
 
     for p in all_params:
         p.grad = saved_grads[p]
-        
+
 
 @torch.no_grad()
 def init_adamw_optimizer_state(optimizer):
@@ -723,6 +723,7 @@ def init_adamw_optimizer_state(optimizer):
             device=p.device,
         )
 
+    initialized_params = []
     for group in optimizer.param_groups:
         amsgrad = group.get("amsgrad", False)
         capturable = group.get("capturable", False)
@@ -735,6 +736,8 @@ def init_adamw_optimizer_state(optimizer):
             state = optimizer.state[p]
             if len(state) > 0:
                 continue
+
+            initialized_params.append(p)
 
             if isinstance(p, DTensor):
                 local_device = p.to_local().device
@@ -760,7 +763,7 @@ def init_adamw_optimizer_state(optimizer):
     # optimizer. Reset the step counter to 0 so this state initialization is a true
     # no-op for training dynamics, while preserving the already-zeroed exp_avg/exp_avg_sq
     # entries so load_state_dict still finds initialized state.
-    for p in all_params:
+    for p in initialized_params:
         st = optimizer.state.get(p, {})
         step = st.get("step", None)
         if step is None:
