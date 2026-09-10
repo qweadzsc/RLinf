@@ -40,7 +40,6 @@ from rlinf.scheduler import Worker
 from rlinf.utils.utils import clear_memory
 
 
-
 class FSDPStrategy(FSDPStrategyBase):
     _FSDP_CACHE_ATTRS = (
         "_mp_shard",
